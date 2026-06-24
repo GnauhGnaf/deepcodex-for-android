@@ -103,8 +103,10 @@ run_command executes inside /workspace (proot Linux), so shell commands see file
             emit(StreamEvent(textDelta = "${setupResult.getOrThrow()}\n\n"))
         }
 
-        var maxTurns = 50
-        while (maxTurns-- > 0) {
+        // No hard turn limit — same as Codex's `loop {}`.
+        // The model breaks naturally via finish_reason:stop, or the
+        // context window bounds it.
+        while (true) {
             val request = buildRequest(model)
             val toolCalls = mutableMapOf<Int, ToolCallBuilder>()
             val accumulatedText = StringBuilder()
@@ -173,9 +175,6 @@ run_command executes inside /workspace (proot Linux), so shell commands see file
             }
         }
 
-        if (maxTurns <= 0) {
-            emit(StreamEvent(textDelta = "\n\n---\n*已达到最大对话轮次，如需继续请重新发送消息。*"))
-        }
         emit(StreamEvent(done = true))
     }
 
