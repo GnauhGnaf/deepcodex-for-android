@@ -27,6 +27,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.app.ui.chat.ContentBlock
 import com.example.app.ui.chat.UIMessage
 import com.example.app.ui.chat.UIToolCall
 import com.mikepenz.markdown.m3.Markdown
@@ -69,13 +70,13 @@ private fun UserBubble(message: UIMessage, modifier: Modifier) {
 
 // ────────────────────────────────────────────────────────────
 // Assistant block — Claude Code style
-// Layout: thinking (collapsible) → tools → text → cursor
+// Renders blocks in stream order: thinking → text → tools → thinking → text ...
 // ────────────────────────────────────────────────────────────
 @Composable
 private fun AssistantBlock(message: UIMessage, modifier: Modifier) {
-    val hasTools = message.toolCallHistory.isNotEmpty()
-    val hasReasoning = message.reasoning.isNotEmpty()
-    val hasContent = message.content.isNotBlank()
+    val blocks = message.blocks
+    val hasReasoning = blocks.any { it is ContentBlock.Reasoning }
+    val lastReasoningIdx = blocks.indexOfLast { it is ContentBlock.Reasoning }
 
     Column(
         modifier = modifier
@@ -85,62 +86,45 @@ private fun AssistantBlock(message: UIMessage, modifier: Modifier) {
             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
             .padding(10.dp)
     ) {
-        // ── Thinking block (Claude Code style) ──
-        when {
-            // No reasoning yet, model still thinking — pulsing indicator
-            message.isThinking && !hasReasoning -> {
-                PulsingThinking()
-            }
-            // Has reasoning — one collapsible block per turn
-            hasReasoning -> {
-                message.reasoning.forEachIndexed { index, block ->
-                    val isLastBlock = index == message.reasoning.lastIndex
-                    ThinkingBlock(block, isLastBlock && message.isThinking)
-                    if (index < message.reasoning.lastIndex) {
-                        Spacer(Modifier.height(2.dp))
+        // Pulsing when model is thinking but no reasoning blocks yet
+        if (message.isThinking && !hasReasoning) {
+            PulsingThinking()
+        }
+
+        // Render blocks in their natural stream order
+        blocks.forEachIndexed { index, block ->
+            when (block) {
+                is ContentBlock.Reasoning -> {
+                    ThinkingBlock(block.text, index == lastReasoningIdx && message.isThinking)
+                }
+                is ContentBlock.ToolCalls -> {
+                    ToolCallSection(block.calls, message.isStreaming)
+                }
+                is ContentBlock.Text -> {
+                    if (block.text.isNotBlank()) {
+                        Markdown(
+                            content = block.text,
+                            colors = com.mikepenz.markdown.m3.markdownColor(
+                                text = MaterialTheme.colorScheme.onSurface
+                            ),
+                            typography = com.mikepenz.markdown.m3.markdownTypography(
+                                h1 = MaterialTheme.typography.headlineMedium,
+                                h2 = MaterialTheme.typography.headlineSmall,
+                                h3 = MaterialTheme.typography.titleLarge,
+                                text = MaterialTheme.typography.bodyMedium,
+                                code = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+                                inlineCode = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace)
+                            )
+                        )
                     }
                 }
-                Spacer(Modifier.height(6.dp))
-                HorizontalDivider(
-                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f),
-                    thickness = 0.5.dp
-                )
-                Spacer(Modifier.height(6.dp))
+            }
+            if (index < blocks.lastIndex) {
+                Spacer(Modifier.height(4.dp))
             }
         }
 
-        // ── Tool calls ──
-        if (hasTools) {
-            ToolCallSection(message.toolCallHistory, message.isStreaming)
-            if (hasContent) {
-                Spacer(Modifier.height(6.dp))
-                HorizontalDivider(
-                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
-                    thickness = 0.5.dp
-                )
-                Spacer(Modifier.height(6.dp))
-            }
-        }
-
-        // ── Main text — always visible ──
-        if (hasContent) {
-            Markdown(
-                content = message.content,
-                colors = com.mikepenz.markdown.m3.markdownColor(
-                    text = MaterialTheme.colorScheme.onSurface
-                ),
-                typography = com.mikepenz.markdown.m3.markdownTypography(
-                    h1 = MaterialTheme.typography.headlineMedium,
-                    h2 = MaterialTheme.typography.headlineSmall,
-                    h3 = MaterialTheme.typography.titleLarge,
-                    text = MaterialTheme.typography.bodyMedium,
-                    code = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
-                    inlineCode = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace)
-                )
-            )
-        }
-
-        // ── Streaming cursor ──
+        // Streaming cursor
         if (message.isStreaming && !message.isThinking) {
             Spacer(Modifier.height(2.dp))
             Box(
