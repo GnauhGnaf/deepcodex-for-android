@@ -2,13 +2,15 @@ package com.example.app.domain.tools
 
 import com.example.app.data.api.models.ToolResult
 import com.example.app.domain.Tool
+import com.example.app.domain.tools.PathUtil.stripWorkspacePrefix
 import java.io.File
 
 class ListFilesTool(private val workspaceDir: File) : Tool {
     override val name = "list_files"
 
     override suspend fun execute(arguments: Map<String, String>): ToolResult {
-        val subPath = arguments["path"]?.takeIf { it.isNotBlank() } ?: ""
+        val rawPath = arguments["path"]?.takeIf { it.isNotBlank() } ?: ""
+        val subPath = stripWorkspacePrefix(rawPath)
         val dir = if (subPath.isEmpty()) workspaceDir else File(workspaceDir, subPath).canonicalFile
         if (!dir.path.startsWith(workspaceDir.canonicalPath)) {
             return ToolResult("", name, false, "路径越界: $subPath")
@@ -22,7 +24,7 @@ class ListFilesTool(private val workspaceDir: File) : Tool {
         return try {
             val entries = dir.listFiles()?.toList()?.sortedBy { it.name } ?: emptyList()
             val sb = StringBuilder()
-            sb.appendLine("目录: ${dir.absolutePath}")
+            sb.appendLine("目录: $subPath")
             sb.appendLine("共 ${entries.size} 项:")
             for (f in entries) {
                 val prefix = if (f.isDirectory) "[D]" else "[F]"

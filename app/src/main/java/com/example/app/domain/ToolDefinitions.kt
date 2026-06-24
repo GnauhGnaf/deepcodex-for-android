@@ -19,7 +19,7 @@ object ToolDefinitions {
         get() = ToolDef(
             function = FunctionSpec(
                 name = "read_file",
-                description = "读取指定文件的内容",
+                description = "读取工作区内指定文件的内容。path 是相对路径（如 fibonacci.py 或 src/main.py），不要加 /workspace 前缀",
                 parameters = buildJsonObject {
                     put("type", JsonPrimitive("object"))
                     putJsonObject("properties") {
@@ -37,7 +37,7 @@ object ToolDefinitions {
         get() = ToolDef(
             function = FunctionSpec(
                 name = "write_file",
-                description = "创建或覆盖文件",
+                description = "在工作区内创建或覆盖文件。path 是相对路径，不要加 /workspace 前缀",
                 parameters = buildJsonObject {
                     put("type", JsonPrimitive("object"))
                     putJsonObject("properties") {
@@ -62,7 +62,7 @@ object ToolDefinitions {
         get() = ToolDef(
             function = FunctionSpec(
                 name = "list_files",
-                description = "列出目录中的文件和子目录",
+                description = "列出工作区内指定目录的内容。path 是相对路径，留空为根目录。不要加 /workspace 前缀",
                 parameters = buildJsonObject {
                     put("type", JsonPrimitive("object"))
                     putJsonObject("properties") {
