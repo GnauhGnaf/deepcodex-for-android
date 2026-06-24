@@ -91,19 +91,45 @@ private fun AssistantBlock(message: UIMessage, modifier: Modifier) {
             PulsingThinking()
         }
 
-        // ── Reasoning block (Codex: collapsible chain-of-thought) ──
+        // ── Reasoning — inline dimmed text, flows into main content ──
         if (hasReasoning) {
-            ReasoningBlock(message.reasoning, message.isThinking)
+            if (hasContent) {
+                // reasoning + content together, reasoning as muted prefix
+                Text(
+                    text = message.reasoning,
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 11.sp
+                    ),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f),
+                    modifier = Modifier.padding(bottom = 6.dp)
+                )
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f),
+                    thickness = 0.5.dp
+                )
+                Spacer(Modifier.height(6.dp))
+            } else {
+                // No content yet — reasoning IS the current output
+                Text(
+                    text = message.reasoning,
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 11.sp
+                    ),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f),
+                    modifier = Modifier.padding(bottom = 6.dp)
+                )
+            }
         }
 
         // ── Tool calls ──
         if (hasTools) {
-            if (hasReasoning) Spacer(Modifier.height(4.dp))
             ToolCallSection(message.toolCallHistory, message.isStreaming)
         }
 
         // ── Divider (between tools and text) ──
-        if ((hasTools || hasReasoning) && hasContent) {
+        if (hasTools && hasContent && !hasReasoning) {
             Spacer(Modifier.height(6.dp))
             HorizontalDivider(
                 color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
@@ -112,7 +138,7 @@ private fun AssistantBlock(message: UIMessage, modifier: Modifier) {
             Spacer(Modifier.height(6.dp))
         }
 
-        // ── Main text (always visible) ──
+        // ── Main text — always visible ──
         if (hasContent) {
             Markdown(
                 content = message.content,
@@ -174,83 +200,6 @@ private fun PulsingThinking() {
             color = MaterialTheme.colorScheme.outline.copy(alpha = alpha),
             fontSize = 12.sp
         )
-    }
-}
-
-// ────────────────────────────────────────────────────────────
-// Reasoning block — collapsible, monospace, dimmed
-// Shows the model's chain-of-thought (reasoning_content)
-// ────────────────────────────────────────────────────────────
-@Composable
-private fun ReasoningBlock(reasoning: String, isThinking: Boolean) {
-    var collapsed by remember(isThinking) {
-        mutableStateOf(false)
-    }
-
-    Column {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(4.dp))
-                .clickable { collapsed = !collapsed }
-                .padding(vertical = 2.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            Text(
-                text = "思考过程",
-                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
-                fontSize = 11.sp,
-                color = MaterialTheme.colorScheme.outline
-            )
-            if (isThinking) {
-                Text(
-                    text = "…",
-                    style = MaterialTheme.typography.labelSmall,
-                    fontSize = 11.sp,
-                    color = MaterialTheme.colorScheme.primary
-                )
-            }
-            Spacer(Modifier.weight(1f))
-            Text(
-                text = "${reasoning.length} 字",
-                style = MaterialTheme.typography.labelSmall,
-                fontSize = 10.sp,
-                color = MaterialTheme.colorScheme.outline
-            )
-            Icon(
-                if (collapsed) Icons.Default.ExpandMore else Icons.Default.ExpandLess,
-                contentDescription = if (collapsed) "展开" else "收起",
-                modifier = Modifier.size(14.dp),
-                tint = MaterialTheme.colorScheme.outline
-            )
-        }
-
-        AnimatedVisibility(
-            visible = !collapsed,
-            enter = expandVertically(),
-            exit = shrinkVertically()
-        ) {
-            Row(modifier = Modifier.padding(start = 2.dp, top = 2.dp)) {
-                // Left accent — purple/primary
-                Box(
-                    modifier = Modifier
-                        .width(2.dp)
-                        .heightIn(min = 12.dp)
-                        .clip(RoundedCornerShape(1.dp))
-                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.3f))
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    text = reasoning,
-                    style = MaterialTheme.typography.bodySmall.copy(
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 11.sp
-                    ),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                )
-            }
-        }
     }
 }
 
