@@ -81,9 +81,9 @@ dependencies {
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 
-    // Markdown
-    implementation("com.mikepenz:multiplatform-markdown-renderer:0.27.0")
-    implementation("com.mikepenz:multiplatform-markdown-renderer-m3:0.27.0")
+    // Markdown (0.28.0 adds table support)
+    implementation("com.mikepenz:multiplatform-markdown-renderer:0.28.0")
+    implementation("com.mikepenz:multiplatform-markdown-renderer-m3:0.28.0")
 
     // Archive extraction
     implementation("org.apache.commons:commons-compress:1.26.2")
