@@ -202,18 +202,19 @@ class LinuxEnvironment(context: Context) {
         }
     }
 
-    fun execCommand(
+    suspend fun execCommand(
         command: String,
         workspaceDir: File,
         timeoutSeconds: Long = 30
-    ): ProcessResult {
-        return execRaw(
+    ): ProcessResult = withContext(Dispatchers.IO) {
+        execRaw(
             "cd /workspace && $command",
             timeoutSeconds,
             bindMounts = listOf(workspaceDir.absolutePath to "/workspace")
         )
     }
 
+    // Must be called from within Dispatchers.IO context
     private fun execRaw(
         cmd: String,
         timeoutSeconds: Long,
