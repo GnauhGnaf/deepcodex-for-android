@@ -16,6 +16,7 @@ data class UIMessage(
     val id: Long,
     val role: String,
     val content: String = "",
+    val reasoning: String = "",
     val isStreaming: Boolean = false,
     val isThinking: Boolean = false,
     val toolCallHistory: List<UIToolCall> = emptyList()
@@ -63,6 +64,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 repo.sendMessage(text).collect { event ->
                     when {
                         event.thinking -> setAssistantThinking(true)
+
+                        event.reasoningDelta != null -> {
+                            setAssistantThinking(true)
+                            appendToReasoning(event.reasoningDelta)
+                        }
 
                         event.error != null -> {
                             appendToAssistant("\n\n**❌ 错误：** ${event.error}")
@@ -146,6 +152,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private fun appendToAssistant(text: String) {
         val current = ensureAssistant()
         val updated = current.copy(content = current.content + text)
+        currentAssistantMsg = updated
+        updateInList(updated)
+    }
+
+    private fun appendToReasoning(text: String) {
+        val current = ensureAssistant()
+        val updated = current.copy(reasoning = current.reasoning + text)
         currentAssistantMsg = updated
         updateInList(updated)
     }

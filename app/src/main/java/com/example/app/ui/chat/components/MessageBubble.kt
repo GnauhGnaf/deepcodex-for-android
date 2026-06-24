@@ -10,17 +10,14 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -37,111 +34,139 @@ import com.mikepenz.markdown.m3.Markdown
 @Composable
 fun MessageBubble(message: UIMessage, modifier: Modifier = Modifier) {
     val isUser = message.role == "user"
-    val alignment = if (isUser) Arrangement.End else Arrangement.Start
-    val bgColor = if (isUser) {
-        MaterialTheme.colorScheme.primaryContainer
-    } else {
-        MaterialTheme.colorScheme.surfaceVariant
-    }
-    val shape = if (isUser) {
-        RoundedCornerShape(16.dp, 16.dp, 4.dp, 16.dp)
-    } else {
-        RoundedCornerShape(16.dp, 16.dp, 16.dp, 4.dp)
-    }
-    val textColor = if (isUser) {
-        MaterialTheme.colorScheme.onPrimaryContainer
-    } else {
-        MaterialTheme.colorScheme.onSurface
-    }
 
+    if (isUser) {
+        UserBubble(message, modifier)
+    } else {
+        AssistantBlock(message, modifier)
+    }
+}
+
+// ────────────────────────────────────────────────────────────
+// User message — simple bubble, right-aligned
+// ────────────────────────────────────────────────────────────
+@Composable
+private fun UserBubble(message: UIMessage, modifier: Modifier) {
     Row(
         modifier = modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
-        horizontalArrangement = alignment
+        horizontalArrangement = Arrangement.End
     ) {
         Box(
             modifier = Modifier
-                .widthIn(max = 420.dp)
-                .clip(shape)
-                .background(bgColor)
+                .widthIn(max = 400.dp)
+                .clip(RoundedCornerShape(16.dp, 16.dp, 4.dp, 16.dp))
+                .background(MaterialTheme.colorScheme.primaryContainer)
                 .padding(12.dp)
         ) {
-            Column {
-                // ── Thinking ──
-                if (message.isThinking) {
-                    ThinkingIndicator()
-                }
-
-                // ── Tool calls (Claude Code style: inline results, left accent border) ──
-                if (!isUser && message.toolCallHistory.isNotEmpty()) {
-                    ToolCallSection(message.toolCallHistory, message.isStreaming)
-                    Spacer(Modifier.height(6.dp))
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant, thickness = 0.5.dp)
-                    Spacer(Modifier.height(6.dp))
-                }
-
-                // ── Main text ── always visible
-                if (message.content.isNotBlank()) {
-                    if (isUser) {
-                        Text(
-                            text = message.content,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = textColor
-                        )
-                    } else {
-                        Markdown(
-                            content = message.content,
-                            colors = com.mikepenz.markdown.m3.markdownColor(text = textColor),
-                            typography = com.mikepenz.markdown.m3.markdownTypography(
-                                h1 = MaterialTheme.typography.headlineMedium,
-                                h2 = MaterialTheme.typography.headlineSmall,
-                                h3 = MaterialTheme.typography.titleLarge,
-                                text = MaterialTheme.typography.bodyMedium,
-                                code = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
-                                inlineCode = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace)
-                            )
-                        )
-                    }
-                }
-
-                // ── Streaming cursor ──
-                if (message.isStreaming && !message.isThinking) {
-                    Spacer(Modifier.height(2.dp))
-                    Box(
-                        modifier = Modifier
-                            .width(12.dp)
-                            .height(2.dp)
-                            .background(MaterialTheme.colorScheme.primary)
-                    )
-                }
-            }
+            Text(
+                text = message.content,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onPrimaryContainer
+            )
         }
     }
 }
 
 // ────────────────────────────────────────────────────────────
-// Thinking indicator — subtle, like Claude Code's "thinking…"
+// Assistant block — Codex terminal style
+// Layout: reasoning → tools → divider → text → cursor
 // ────────────────────────────────────────────────────────────
 @Composable
-private fun ThinkingIndicator() {
+private fun AssistantBlock(message: UIMessage, modifier: Modifier) {
+    val hasTools = message.toolCallHistory.isNotEmpty()
+    val hasReasoning = message.reasoning.isNotBlank()
+    val hasContent = message.content.isNotBlank()
+    val isThinking = message.isThinking && message.reasoning.isEmpty()
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 4.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+            .padding(10.dp)
+    ) {
+        // ── Thinking (no reasoning text yet) ──
+        if (isThinking) {
+            PulsingThinking()
+        }
+
+        // ── Reasoning block (Codex: collapsible chain-of-thought) ──
+        if (hasReasoning) {
+            ReasoningBlock(message.reasoning, message.isThinking)
+        }
+
+        // ── Tool calls ──
+        if (hasTools) {
+            if (hasReasoning) Spacer(Modifier.height(4.dp))
+            ToolCallSection(message.toolCallHistory, message.isStreaming)
+        }
+
+        // ── Divider (between tools and text) ──
+        if ((hasTools || hasReasoning) && hasContent) {
+            Spacer(Modifier.height(6.dp))
+            HorizontalDivider(
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
+                thickness = 0.5.dp
+            )
+            Spacer(Modifier.height(6.dp))
+        }
+
+        // ── Main text (always visible) ──
+        if (hasContent) {
+            Markdown(
+                content = message.content,
+                colors = com.mikepenz.markdown.m3.markdownColor(
+                    text = MaterialTheme.colorScheme.onSurface
+                ),
+                typography = com.mikepenz.markdown.m3.markdownTypography(
+                    h1 = MaterialTheme.typography.headlineMedium,
+                    h2 = MaterialTheme.typography.headlineSmall,
+                    h3 = MaterialTheme.typography.titleLarge,
+                    text = MaterialTheme.typography.bodyMedium,
+                    code = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+                    inlineCode = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace)
+                )
+            )
+        }
+
+        // ── Streaming cursor ──
+        if (message.isStreaming && !message.isThinking) {
+            Spacer(Modifier.height(2.dp))
+            Box(
+                modifier = Modifier
+                    .width(12.dp)
+                    .height(2.dp)
+                    .background(MaterialTheme.colorScheme.primary)
+            )
+        }
+    }
+}
+
+// ────────────────────────────────────────────────────────────
+// Pulsing "思考中…" when the model hasn't emitted reasoning yet
+// ────────────────────────────────────────────────────────────
+@Composable
+private fun PulsingThinking() {
     val infiniteTransition = rememberInfiniteTransition()
     val alpha by infiniteTransition.animateFloat(
         initialValue = 0.3f,
         targetValue = 1.0f,
-        animationSpec = androidx.compose.animation.core.infiniteRepeatable(
-            animation = androidx.compose.animation.core.tween(600),
-            repeatMode = androidx.compose.animation.core.RepeatMode.Reverse
+        animationSpec = infiniteRepeatable(
+            animation = tween(600),
+            repeatMode = RepeatMode.Reverse
         )
     )
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
-        modifier = Modifier.padding(bottom = 8.dp)
+        modifier = Modifier.padding(bottom = 6.dp)
     ) {
         Icon(
-            Icons.Default.Code,
+            Icons.Default.Psychology,
             contentDescription = null,
             modifier = Modifier.size(14.dp),
-            tint = MaterialTheme.colorScheme.outline.copy(alpha = alpha)
+            tint = MaterialTheme.colorScheme.primary.copy(alpha = alpha)
         )
         Text(
             text = "思考中…",
@@ -153,8 +178,86 @@ private fun ThinkingIndicator() {
 }
 
 // ────────────────────────────────────────────────────────────
-// Tool call section — Claude Code terminal style
-// Each tool: icon + name + status · result inline with accent border
+// Reasoning block — collapsible, monospace, dimmed
+// Shows the model's chain-of-thought (reasoning_content)
+// ────────────────────────────────────────────────────────────
+@Composable
+private fun ReasoningBlock(reasoning: String, isThinking: Boolean) {
+    var collapsed by remember(isThinking) {
+        mutableStateOf(false)
+    }
+
+    Column {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(4.dp))
+                .clickable { collapsed = !collapsed }
+                .padding(vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                text = "思考过程",
+                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.outline
+            )
+            if (isThinking) {
+                Text(
+                    text = "…",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+            Spacer(Modifier.weight(1f))
+            Text(
+                text = "${reasoning.length} 字",
+                style = MaterialTheme.typography.labelSmall,
+                fontSize = 10.sp,
+                color = MaterialTheme.colorScheme.outline
+            )
+            Icon(
+                if (collapsed) Icons.Default.ExpandMore else Icons.Default.ExpandLess,
+                contentDescription = if (collapsed) "展开" else "收起",
+                modifier = Modifier.size(14.dp),
+                tint = MaterialTheme.colorScheme.outline
+            )
+        }
+
+        AnimatedVisibility(
+            visible = !collapsed,
+            enter = expandVertically(),
+            exit = shrinkVertically()
+        ) {
+            Row(modifier = Modifier.padding(start = 2.dp, top = 2.dp)) {
+                // Left accent — purple/primary
+                Box(
+                    modifier = Modifier
+                        .width(2.dp)
+                        .heightIn(min = 12.dp)
+                        .clip(RoundedCornerShape(1.dp))
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.3f))
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = reasoning,
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 11.sp
+                    ),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                )
+            }
+        }
+    }
+}
+
+// ────────────────────────────────────────────────────────────
+// Tool call section — Codex terminal style
+// Each tool: [status] name · status
+// ┃  result inline with accent border
 // ────────────────────────────────────────────────────────────
 @Composable
 private fun ToolCallSection(toolCalls: List<UIToolCall>, isStreaming: Boolean) {
@@ -163,7 +266,6 @@ private fun ToolCallSection(toolCalls: List<UIToolCall>, isStreaming: Boolean) {
         mutableStateOf(false)
     }
 
-    // Section header
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -174,28 +276,22 @@ private fun ToolCallSection(toolCalls: List<UIToolCall>, isStreaming: Boolean) {
     ) {
         Text(
             text = "工具调用",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.outline,
+            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
             fontSize = 11.sp,
-            fontWeight = FontWeight.Medium
-        )
-        Text(
-            text = "·",
-            style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.outline
         )
         Text(
-            text = "${toolCalls.size} 个工具",
+            text = "${toolCalls.size} 个",
             style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.outline,
-            fontSize = 11.sp
+            fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.outline
         )
         if (anyRunning) {
             Text(
                 text = "执行中…",
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.primary,
-                fontSize = 11.sp
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.primary
             )
         }
         Spacer(Modifier.weight(1f))
@@ -213,17 +309,15 @@ private fun ToolCallSection(toolCalls: List<UIToolCall>, isStreaming: Boolean) {
         exit = shrinkVertically()
     ) {
         Column(modifier = Modifier.padding(top = 2.dp)) {
-            toolCalls.forEach { tc ->
-                ToolCallRow(tc)
-            }
+            toolCalls.forEach { tc -> ToolCallRow(tc) }
         }
     }
 }
 
 // ────────────────────────────────────────────────────────────
-// Single tool call row — Claude Code terminal style
+// Single tool call row
 // [icon] name · status
-// ┃  result text (always visible inline, monospace, accent border)
+// ┃  result (always visible, monospace, accent border)
 // ────────────────────────────────────────────────────────────
 @Composable
 private fun ToolCallRow(toolCall: UIToolCall) {
@@ -244,13 +338,11 @@ private fun ToolCallRow(toolCall: UIToolCall) {
         else -> "失败"
     }
 
-    Column(modifier = Modifier.padding(vertical = 3.dp)) {
-        // Tool header: icon + name + status
+    Column(modifier = Modifier.padding(vertical = 2.dp)) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
-            // Status dot/icon
             if (isRunning) {
                 Box(
                     modifier = Modifier
@@ -259,34 +351,23 @@ private fun ToolCallRow(toolCall: UIToolCall) {
                         .background(statusColor)
                 )
             } else if (isSuccess) {
-                Icon(
-                    Icons.Default.Check,
-                    contentDescription = null,
-                    modifier = Modifier.size(12.dp),
-                    tint = statusColor
-                )
+                Icon(Icons.Default.Check, null, Modifier.size(12.dp), tint = statusColor)
             } else {
-                Icon(
-                    Icons.Default.Close,
-                    contentDescription = null,
-                    modifier = Modifier.size(12.dp),
-                    tint = statusColor
-                )
+                Icon(Icons.Default.Close, null, Modifier.size(12.dp), tint = statusColor)
             }
 
             Text(
                 text = toolCall.name,
-                style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
-                fontWeight = FontWeight.SemiBold,
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.SemiBold
+                ),
                 fontSize = 12.sp,
-                color = MaterialTheme.colorScheme.onSurface
+                color = if (isError) MaterialTheme.colorScheme.error
+                    else MaterialTheme.colorScheme.onSurface
             )
 
-            Text(
-                text = "·",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.outline
-            )
+            Text("·", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
 
             Text(
                 text = statusLabel,
@@ -296,10 +377,8 @@ private fun ToolCallRow(toolCall: UIToolCall) {
             )
         }
 
-        // Tool result — always inline, with left accent border (Claude Code terminal style)
         if (toolCall.result.isNotBlank()) {
             Row(modifier = Modifier.padding(start = 4.dp, top = 2.dp)) {
-                // Left accent border
                 Box(
                     modifier = Modifier
                         .width(2.dp)
@@ -311,7 +390,6 @@ private fun ToolCallRow(toolCall: UIToolCall) {
                         )
                 )
                 Spacer(Modifier.width(8.dp))
-                // Result text — monospace, always fully visible
                 Text(
                     text = toolCall.result,
                     style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
@@ -323,5 +401,4 @@ private fun ToolCallRow(toolCall: UIToolCall) {
     }
 }
 
-// Lighter green that works on both light and dark themes
 private val ColorSuccess = androidx.compose.ui.graphics.Color(0xFF2E7D32)

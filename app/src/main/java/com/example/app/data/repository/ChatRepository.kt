@@ -13,6 +13,7 @@ import kotlinx.serialization.json.Json
 
 data class StreamEvent(
     val textDelta: String? = null,
+    val reasoningDelta: String? = null,
     val toolCallStart: ToolCallDelta? = null,
     val toolResult: ToolResult? = null,
     val thinking: Boolean = false,
@@ -122,6 +123,7 @@ run_command executes inside /workspace (proot Linux), so shell commands see file
                         isThinking = true
                         emit(StreamEvent(thinking = true))
                     }
+                    emit(StreamEvent(reasoningDelta = delta.reasoningContent))
                     return@collect
                 }
                 if (delta.content != null) {
