@@ -24,7 +24,7 @@ data class StreamEvent(
 class ChatRepository(
     private val settingsRepository: SettingsRepository,
     private val client: DeepSeekClient,
-    private val toolExecutor: ToolExecutor,
+    private val toolExecutorProvider: () -> ToolExecutor,
     private val conversationManager: ConversationManager,
     private val linuxEnv: LinuxEnvironment
 ) {
@@ -76,8 +76,15 @@ run_command executes inside /workspace (proot Linux), so shell commands see file
 """.trimIndent()
     }
 
-    fun initSession() {
-        conversationManager.clear()
+    fun initSession(convId: String? = null, messages: List<Message>? = null) {
+        if (convId != null && messages != null) {
+            conversationManager.loadConversation(convId, "", messages)
+        } else {
+            conversationManager.clear()
+            if (convId != null) {
+                conversationManager.newSession(convId)
+            }
+        }
         conversationManager.addSystem(SYSTEM_PROMPT)
     }
 
@@ -159,7 +166,7 @@ run_command executes inside /workspace (proot Linux), so shell commands see file
                 conversationManager.addAssistant(content = text, toolCalls = assistantToolCalls)
 
                 for (tc in assistantToolCalls) {
-                    val result = toolExecutor.execute(tc.function.name, tc.function.arguments)
+                    val result = toolExecutorProvider().execute(tc.function.name, tc.function.arguments)
                     emit(StreamEvent(toolResult = result.copy(toolCallId = tc.id)))
                     conversationManager.addToolResult(tc.id, result.name, result.output)
                 }

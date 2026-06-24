@@ -13,19 +13,36 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.app.App
 import com.example.app.ui.chat.components.ChatInputBar
 import com.example.app.ui.chat.components.MessageBubble
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(
+    onNavigateToHistory: () -> Unit,
     onNavigateToSettings: () -> Unit,
     viewModel: ChatViewModel = viewModel()
 ) {
     val messages by viewModel.messages.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     val listState = rememberLazyListState()
+
+    val app = LocalContext.current.applicationContext as App
+
+    // Handle pending conversation actions from HistoryScreen
+    val actionVersion by app.container.pendingActionVersion
+    LaunchedEffect(actionVersion) {
+        if (actionVersion == 0) return@LaunchedEffect
+        val id = app.container.pendingLoadConversationId
+        if (id != null && id.isNotEmpty()) {
+            viewModel.loadConversation(id)
+        } else {
+            viewModel.clearChat()
+        }
+    }
 
     // Track whether user was at the bottom — updated continuously from layout.
     // Using mutableState (not derivedStateOf) because we read it in a
@@ -46,6 +63,9 @@ fun ChatScreen(
             TopAppBar(
                 title = { Text("DeepSeek Codex") },
                 actions = {
+                    IconButton(onClick = onNavigateToHistory) {
+                        Icon(Icons.AutoMirrored.Filled.List, "对话历史")
+                    }
                     IconButton(onClick = {
                         viewModel.clearChat()
                     }) {

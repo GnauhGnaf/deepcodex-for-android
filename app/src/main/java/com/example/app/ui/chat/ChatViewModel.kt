@@ -52,7 +52,86 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private var currentJob: Job? = null
 
     init {
-        repo.initSession()
+        startNewConversation()
+    }
+
+    fun startNewConversation() {
+        val newId = app.container.conversationStore.newId()
+        app.container.switchConversation(newId)
+        repo.initSession(convId = newId)
+        _messages.value = emptyList()
+        messageCounter = 0L
+        currentAssistantMsg = null
+        pendingToolCalls.clear()
+    }
+
+    suspend fun loadConversation(id: String) {
+        val persisted = app.container.conversationStore.loadConversation(id) ?: return
+        app.container.switchConversation(id)
+        repo.initSession(convId = id, messages = persisted.messages)
+        _messages.value = rebuildUIMessages(persisted.messages)
+        messageCounter = _messages.value.size.toLong()
+        currentAssistantMsg = null
+        pendingToolCalls.clear()
+    }
+
+    private fun rebuildUIMessages(apiMessages: List<com.example.app.data.api.models.Message>): List<UIMessage> {
+        val uiMessages = mutableListOf<UIMessage>()
+        for (msg in apiMessages) {
+            when (msg.role) {
+                "user" -> {
+                    val text = msg.content ?: ""
+                    uiMessages.add(UIMessage(
+                        id = nextId(),
+                        role = "user",
+                        blocks = listOf(ContentBlock.Text(text))
+                    ))
+                }
+                "assistant" -> {
+                    val blocks = mutableListOf<ContentBlock>()
+                    if (!msg.content.isNullOrBlank()) {
+                        blocks.add(ContentBlock.Text(msg.content))
+                    }
+                    if (!msg.toolCalls.isNullOrEmpty()) {
+                        val uiToolCalls = msg.toolCalls.map { tc ->
+                            UIToolCall(
+                                id = tc.id,
+                                name = tc.function.name,
+                                status = "done",
+                                result = ""
+                            )
+                        }
+                        blocks.add(ContentBlock.ToolCalls(uiToolCalls))
+                    }
+                    if (blocks.isNotEmpty()) {
+                        uiMessages.add(UIMessage(id = nextId(), role = "assistant", blocks = blocks))
+                    }
+                }
+                "tool" -> {
+                    val toolCallId = msg.toolCallId ?: continue
+                    val result = msg.content ?: ""
+                    for (i in uiMessages.indices.reversed()) {
+                        val uiMsg = uiMessages[i]
+                        val toolCallsBlock = uiMsg.blocks.filterIsInstance<ContentBlock.ToolCalls>().lastOrNull()
+                        if (toolCallsBlock != null) {
+                            val updatedCalls = toolCallsBlock.calls.map { call ->
+                                if (call.id == toolCallId) call.copy(result = result) else call
+                            }
+                            val updatedBlocks = uiMsg.blocks.map { block ->
+                                if (block is ContentBlock.ToolCalls) ContentBlock.ToolCalls(updatedCalls) else block
+                            }
+                            uiMessages[i] = uiMsg.copy(blocks = updatedBlocks)
+                            break
+                        }
+                    }
+                }
+            }
+        }
+        return uiMessages
+    }
+
+    private suspend fun persistCurrentConversation() {
+        app.container.saveCurrentConversation()
     }
 
     fun sendMessage(text: String) {
@@ -107,13 +186,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                     status = if (result.success) "done" else "error",
                                     result = result.output
                                 )
-                                // Find and update the correct key
                                 pendingToolCalls.entries.find { it.value.id == existing.id }?.let { entry ->
                                     pendingToolCalls[entry.key] = updated
                                 }
                             } ?: run {
                                 Log.d("ChatVM", "  Fallback: no match found, adding new entry")
-                                // Fallback: add result directly
                                 val idx = pendingToolCalls.size
                                 pendingToolCalls[idx] = UIToolCall(
                                     id = result.toolCallId,
@@ -128,6 +205,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         event.done -> {
                             finalizeAssistant()
                             _isLoading.value = false
+                            persistCurrentConversation()
                         }
                     }
                 }
@@ -219,9 +297,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun clearChat() {
-        repo.clearHistory()
-        currentAssistantMsg = null
-        _messages.value = emptyList()
+        startNewConversation()
     }
 
     private fun nextId() = ++messageCounter
