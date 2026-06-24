@@ -1,9 +1,12 @@
 package com.example.app.data.api.models
 
+import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
 
+@OptIn(ExperimentalSerializationApi::class)
 @Serializable
 data class ChatRequest(
     val model: String,
@@ -13,6 +16,7 @@ data class ChatRequest(
     val toolChoice: String? = "auto",
     val stream: Boolean = true,
     @SerialName("max_tokens")
+    @EncodeDefault(EncodeDefault.Mode.NEVER)
     val maxTokens: Int? = null
 )
 

@@ -168,6 +168,9 @@ class LinuxEnvironment(context: Context) {
 
             // --- Step 5: Test Python ---
             log.appendLine("[5/5] 测试 Python...")
+
+            // Pre-configure pip: remove EXTERNALLY-MANAGED restriction, set mirror, allow system-wide
+            execRaw("rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED 2>/dev/null; pip config set global.break-system-packages true 2>&1 || true", 10)
             execRaw("pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple 2>&1 || true", 30)
 
             for (attempt in 1..3) {
