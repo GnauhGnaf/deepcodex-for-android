@@ -17,7 +17,7 @@ data class UIMessage(
     val content: String = "",
     val isStreaming: Boolean = false,
     val isThinking: Boolean = false,
-    val toolCalls: List<UIToolCall> = emptyList()
+    val toolCallHistory: List<UIToolCall> = emptyList()
 )
 
 data class UIToolCall(
@@ -58,49 +58,56 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         pendingToolCalls.clear()
 
         currentJob = viewModelScope.launch {
-            var hasError = false
             try {
                 repo.sendMessage(text).collect { event ->
                     when {
-                        event.thinking -> {
-                            setAssistantThinking(true)
-                        }
+                        event.thinking -> setAssistantThinking(true)
+
                         event.error != null -> {
-                            hasError = true
-                            addOrUpdateAssistant("错误: ${event.error}")
+                            appendToAssistant("\n\n**❌ 错误：** ${event.error}")
                             _isLoading.value = false
                         }
+
                         event.textDelta != null -> {
                             if (currentAssistantMsg?.isThinking == true) {
                                 setAssistantThinking(false)
                             }
                             appendToAssistant(event.textDelta)
                         }
+
                         event.toolCallStart != null -> {
                             val tc = event.toolCallStart
-                            val idx = tc.index
-                            pendingToolCalls[idx] = UIToolCall(
+                            pendingToolCalls[tc.index] = UIToolCall(
                                 id = tc.id ?: "pending",
                                 name = tc.function?.name ?: "unknown"
                             )
-                            updateAssistantToolCalls()
+                            syncToolCallsToAssistant()
                         }
+
                         event.toolResult != null -> {
                             val result = event.toolResult
-                            val tc = UIToolCall(
-                                id = result.toolCallId,
-                                name = result.name,
-                                status = if (result.success) "done" else "error",
-                                result = result.output
-                            )
-                            val msg = UIMessage(
-                                id = nextId(),
-                                role = "tool",
-                                content = formatToolResult(result),
-                                toolCalls = listOf(tc)
-                            )
-                            _messages.value = _messages.value + msg
+                            pendingToolCalls.values.find { it.id == result.toolCallId || it.name == result.name }?.let { existing ->
+                                val updated = existing.copy(
+                                    status = if (result.success) "done" else "error",
+                                    result = result.output
+                                )
+                                // Find and update the correct key
+                                pendingToolCalls.entries.find { it.value.id == existing.id }?.let { entry ->
+                                    pendingToolCalls[entry.key] = updated
+                                }
+                            } ?: run {
+                                // Fallback: add result directly
+                                val idx = pendingToolCalls.size
+                                pendingToolCalls[idx] = UIToolCall(
+                                    id = result.toolCallId,
+                                    name = result.name,
+                                    status = if (result.success) "done" else "error",
+                                    result = result.output
+                                )
+                            }
+                            syncToolCallsToAssistant()
                         }
+
                         event.done -> {
                             finalizeAssistant()
                             _isLoading.value = false
@@ -108,12 +115,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
             } catch (e: Exception) {
-                hasError = true
-                addOrUpdateAssistant("网络错误: ${e.message}")
+                appendToAssistant("\n\n**❌ 网络错误：** ${e.message}")
                 _isLoading.value = false
-            }
-
-            if (hasError) {
                 finalizeAssistant()
             }
             currentJob = null
@@ -127,51 +130,35 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         _isLoading.value = false
     }
 
-    private fun addOrUpdateAssistant(text: String) {
+    private fun ensureAssistant(): UIMessage {
         val current = currentAssistantMsg
-        if (current == null) {
-            val msg = UIMessage(id = nextId(), role = "assistant", content = text, isStreaming = true)
-            currentAssistantMsg = msg
-            _messages.value = _messages.value + msg
-        } else {
-            val updated = current.copy(content = current.content + text)
-            currentAssistantMsg = updated
-            _messages.value = _messages.value.map { if (it.id == current.id) updated else it }
-        }
+        if (current != null) return current
+        val msg = UIMessage(id = nextId(), role = "assistant", content = "", isStreaming = true)
+        currentAssistantMsg = msg
+        _messages.value = _messages.value + msg
+        return msg
     }
 
     private fun appendToAssistant(text: String) {
-        val current = currentAssistantMsg
-        if (current == null) {
-            val msg = UIMessage(id = nextId(), role = "assistant", content = text, isStreaming = true)
-            currentAssistantMsg = msg
-            _messages.value = _messages.value + msg
-        } else {
-            val updated = current.copy(content = current.content + text)
-            currentAssistantMsg = updated
-            _messages.value = _messages.value.map { if (it.id == current.id) updated else it }
-        }
+        val current = ensureAssistant()
+        val updated = current.copy(content = current.content + text)
+        currentAssistantMsg = updated
+        updateInList(updated)
     }
 
     private fun setAssistantThinking(thinking: Boolean) {
-        val current = currentAssistantMsg
-        if (current == null) {
-            val msg = UIMessage(id = nextId(), role = "assistant", content = "", isStreaming = true, isThinking = thinking)
-            currentAssistantMsg = msg
-            _messages.value = _messages.value + msg
-        } else {
-            val updated = current.copy(isThinking = thinking, isStreaming = true)
-            currentAssistantMsg = updated
-            _messages.value = _messages.value.map { if (it.id == current.id) updated else it }
-        }
+        val current = ensureAssistant()
+        val updated = current.copy(isThinking = thinking, isStreaming = true)
+        currentAssistantMsg = updated
+        updateInList(updated)
     }
 
-    private fun updateAssistantToolCalls() {
-        val current = currentAssistantMsg ?: return
-        val toolCallList = pendingToolCalls.values.toList()
-        val updated = current.copy(toolCalls = toolCallList)
+    private fun syncToolCallsToAssistant() {
+        val current = ensureAssistant()
+        val allCalls = pendingToolCalls.values.toList()
+        val updated = current.copy(toolCallHistory = allCalls)
         currentAssistantMsg = updated
-        _messages.value = _messages.value.map { if (it.id == current.id) updated else it }
+        updateInList(updated)
     }
 
     private fun finalizeAssistant() {
@@ -179,7 +166,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val updated = current.copy(isStreaming = false)
         currentAssistantMsg = null
         pendingToolCalls.clear()
-        _messages.value = _messages.value.map { if (it.id == current.id) updated else it }
+        updateInList(updated)
+    }
+
+    private fun updateInList(msg: UIMessage) {
+        _messages.value = _messages.value.map { if (it.id == msg.id) msg else it }
     }
 
     fun clearChat() {
@@ -189,9 +180,4 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun nextId() = ++messageCounter
-
-    private fun formatToolResult(result: ToolResult): String {
-        val prefix = if (result.success) "✓" else "✗"
-        return "$prefix ${result.name}:\n${result.output}"
-    }
 }
