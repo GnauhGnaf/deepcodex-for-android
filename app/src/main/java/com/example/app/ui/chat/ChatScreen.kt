@@ -35,8 +35,6 @@ fun ChatScreen(
         }
     }
 
-    val lastBlock = messages.lastOrNull()?.blocks?.lastOrNull()
-
     Scaffold(
         topBar = {
             TopAppBar(
@@ -99,9 +97,15 @@ fun ChatScreen(
             }
         }
 
-        LaunchedEffect(messages.size, lastBlock) {
-            if (isAtBottom && messages.isNotEmpty()) {
-                listState.animateScrollToItem(messages.size)
+        LaunchedEffect(Unit) {
+            snapshotFlow {
+                messages.lastOrNull()?.let { msg ->
+                    msg.id to msg.blocks.size to msg.blocks.lastOrNull()
+                }
+            }.collect {
+                if (isAtBottom && messages.isNotEmpty()) {
+                    listState.scrollToItem(messages.size)
+                }
             }
         }
     }
