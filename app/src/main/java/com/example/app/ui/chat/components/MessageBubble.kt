@@ -263,7 +263,7 @@ private fun ThinkingBlock(reasoning: String, isThinking: Boolean) {
 private fun ToolCallSection(toolCalls: List<UIToolCall>, isStreaming: Boolean) {
     val anyRunning = toolCalls.any { it.status == "running" }
     var collapsed by remember(isStreaming, toolCalls.size) {
-        mutableStateOf(false)
+        mutableStateOf(true)
     }
 
     Row(
