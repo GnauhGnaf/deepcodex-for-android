@@ -68,14 +68,14 @@ private fun UserBubble(message: UIMessage, modifier: Modifier) {
 }
 
 // ────────────────────────────────────────────────────────────
-// Assistant block — Codex terminal style
-// Layout: reasoning → tools → divider → text → cursor
+// Assistant block — Claude Code style
+// Layout: thinking (collapsible) → tools → text → cursor
 // ────────────────────────────────────────────────────────────
 @Composable
 private fun AssistantBlock(message: UIMessage, modifier: Modifier) {
     val hasTools = message.toolCallHistory.isNotEmpty()
+    val hasReasoning = message.reasoning.isNotBlank()
     val hasContent = message.content.isNotBlank()
-    val isThinking = message.isThinking && !hasContent
 
     Column(
         modifier = modifier
@@ -85,24 +85,35 @@ private fun AssistantBlock(message: UIMessage, modifier: Modifier) {
             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
             .padding(10.dp)
     ) {
-        // ── Thinking (no content yet, model reasoning) ──
-        if (isThinking) {
-            PulsingThinking()
+        // ── Thinking block (Claude Code style) ──
+        when {
+            // No reasoning yet, model still thinking — pulsing indicator
+            message.isThinking && !hasReasoning -> {
+                PulsingThinking()
+            }
+            // Has reasoning — collapsible block
+            hasReasoning -> {
+                ThinkingBlock(message.reasoning, message.isThinking)
+                Spacer(Modifier.height(6.dp))
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f),
+                    thickness = 0.5.dp
+                )
+                Spacer(Modifier.height(6.dp))
+            }
         }
 
         // ── Tool calls ──
         if (hasTools) {
             ToolCallSection(message.toolCallHistory, message.isStreaming)
-        }
-
-        // ── Divider (between tools and text) ──
-        if (hasTools && hasContent) {
-            Spacer(Modifier.height(6.dp))
-            HorizontalDivider(
-                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
-                thickness = 0.5.dp
-            )
-            Spacer(Modifier.height(6.dp))
+            if (hasContent) {
+                Spacer(Modifier.height(6.dp))
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
+                    thickness = 0.5.dp
+                )
+                Spacer(Modifier.height(6.dp))
+            }
         }
 
         // ── Main text — always visible ──
@@ -167,6 +178,89 @@ private fun PulsingThinking() {
             color = MaterialTheme.colorScheme.outline.copy(alpha = alpha),
             fontSize = 12.sp
         )
+    }
+}
+
+// ────────────────────────────────────────────────────────────
+// Thinking block — Claude Code style: auto-collapse when done
+// ────────────────────────────────────────────────────────────
+@Composable
+private fun ThinkingBlock(reasoning: String, isThinking: Boolean) {
+    // Expanded while thinking, collapsed when done (user can toggle)
+    var collapsed by remember(isThinking) {
+        mutableStateOf(!isThinking)
+    }
+
+    Column {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(4.dp))
+                .clickable { collapsed = !collapsed }
+                .padding(vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Icon(
+                Icons.Default.Psychology,
+                contentDescription = null,
+                modifier = Modifier.size(14.dp),
+                tint = if (isThinking) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.outline
+            )
+            Text(
+                text = "思考过程",
+                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.outline
+            )
+            Text(
+                text = "· ${reasoning.length} 字",
+                style = MaterialTheme.typography.labelSmall,
+                fontSize = 10.sp,
+                color = MaterialTheme.colorScheme.outline
+            )
+            if (isThinking) {
+                Text(
+                    text = "思考中…",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontSize = 10.sp,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+            Spacer(Modifier.weight(1f))
+            Icon(
+                if (collapsed) Icons.Default.ExpandMore else Icons.Default.ExpandLess,
+                contentDescription = if (collapsed) "展开" else "收起",
+                modifier = Modifier.size(14.dp),
+                tint = MaterialTheme.colorScheme.outline
+            )
+        }
+
+        AnimatedVisibility(
+            visible = !collapsed,
+            enter = expandVertically(),
+            exit = shrinkVertically()
+        ) {
+            Row(modifier = Modifier.padding(start = 2.dp, top = 4.dp)) {
+                Box(
+                    modifier = Modifier
+                        .width(2.dp)
+                        .heightIn(min = 12.dp)
+                        .clip(RoundedCornerShape(1.dp))
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.3f))
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = reasoning,
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 11.sp
+                    ),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f)
+                )
+            }
+        }
     }
 }
 
