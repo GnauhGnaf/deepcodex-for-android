@@ -74,7 +74,7 @@ private fun UserBubble(message: UIMessage, modifier: Modifier) {
 @Composable
 private fun AssistantBlock(message: UIMessage, modifier: Modifier) {
     val hasTools = message.toolCallHistory.isNotEmpty()
-    val hasReasoning = message.reasoning.isNotBlank()
+    val hasReasoning = message.reasoning.isNotEmpty()
     val hasContent = message.content.isNotBlank()
 
     Column(
@@ -91,9 +91,15 @@ private fun AssistantBlock(message: UIMessage, modifier: Modifier) {
             message.isThinking && !hasReasoning -> {
                 PulsingThinking()
             }
-            // Has reasoning — collapsible block
+            // Has reasoning — one collapsible block per turn
             hasReasoning -> {
-                ThinkingBlock(message.reasoning, message.isThinking)
+                message.reasoning.forEachIndexed { index, block ->
+                    val isLastBlock = index == message.reasoning.lastIndex
+                    ThinkingBlock(block, isLastBlock && message.isThinking)
+                    if (index < message.reasoning.lastIndex) {
+                        Spacer(Modifier.height(2.dp))
+                    }
+                }
                 Spacer(Modifier.height(6.dp))
                 HorizontalDivider(
                     color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f),

@@ -16,7 +16,7 @@ data class UIMessage(
     val id: Long,
     val role: String,
     val content: String = "",
-    val reasoning: String = "",
+    val reasoning: List<String> = emptyList(),
     val isStreaming: Boolean = false,
     val isThinking: Boolean = false,
     val toolCallHistory: List<UIToolCall> = emptyList()
@@ -41,6 +41,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private var messageCounter = 0L
     private var currentAssistantMsg: UIMessage? = null
+    private var hasContentSinceReasoning = false
     private val pendingToolCalls = mutableMapOf<Int, UIToolCall>()
     private var currentJob: Job? = null
 
@@ -57,6 +58,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
         currentJob?.cancel()
         currentAssistantMsg = null
+        hasContentSinceReasoning = false
         pendingToolCalls.clear()
 
         currentJob = viewModelScope.launch {
@@ -79,10 +81,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             if (currentAssistantMsg?.isThinking == true) {
                                 setAssistantThinking(false)
                             }
+                            hasContentSinceReasoning = true
                             appendToAssistant(event.textDelta)
                         }
 
                         event.toolCallStart != null -> {
+                            hasContentSinceReasoning = true
                             val tc = event.toolCallStart
                             pendingToolCalls[tc.index] = UIToolCall(
                                 id = tc.id ?: "pending",
@@ -92,6 +96,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         }
 
                         event.toolResult != null -> {
+                            hasContentSinceReasoning = true
                             val result = event.toolResult
                             Log.d("ChatVM", "ToolResult: id=${result.toolCallId} name=${result.name} success=${result.success} outputLen=${result.output.length}")
                             pendingToolCalls.values.find { it.id == result.toolCallId || it.name == result.name }?.let { existing ->
@@ -158,7 +163,19 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun appendToReasoning(text: String) {
         val current = ensureAssistant()
-        val updated = current.copy(reasoning = current.reasoning + text)
+        val updated = if (hasContentSinceReasoning) {
+            hasContentSinceReasoning = false
+            current.copy(reasoning = current.reasoning + text)
+        } else {
+            val blocks = current.reasoning.toMutableList()
+            if (blocks.isEmpty()) {
+                blocks.add(text)
+            } else {
+                val last = blocks.lastIndex
+                blocks[last] = blocks[last] + text
+            }
+            current.copy(reasoning = blocks)
+        }
         currentAssistantMsg = updated
         updateInList(updated)
     }
