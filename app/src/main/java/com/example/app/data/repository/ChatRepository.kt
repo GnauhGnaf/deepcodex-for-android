@@ -103,7 +103,7 @@ run_command executes inside /workspace (proot Linux), so shell commands see file
             emit(StreamEvent(textDelta = "${setupResult.getOrThrow()}\n\n"))
         }
 
-        var maxTurns = 10
+        var maxTurns = 50
         while (maxTurns-- > 0) {
             val request = buildRequest(model)
             val toolCalls = mutableMapOf<Int, ToolCallBuilder>()
