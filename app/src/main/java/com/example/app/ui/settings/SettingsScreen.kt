@@ -97,7 +97,7 @@ fun SettingsScreen(
 
             Text("关于", style = MaterialTheme.typography.titleMedium)
             Text(
-                "DeepSeek Codex — 运行在 Android 上的编程助手。\n" +
+                "Codeeps — 运行在 Android 上的编程助手。\n" +
                         "所有数据保存在本地，API 密钥仅用于请求 DeepSeek 服务。",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant

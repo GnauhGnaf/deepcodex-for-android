@@ -67,7 +67,7 @@ fun ChatScreen(
             TopAppBar(
                 title = {
                     Text(
-                        "DeepSeek Codex",
+                        "Codeeps",
                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold)
                     )
                 },
@@ -109,7 +109,7 @@ fun ChatScreen(
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Text(
-                        "DeepSeek Codex",
+                        "Codeeps",
                         style = MaterialTheme.typography.headlineSmall.copy(
                             fontWeight = FontWeight.Bold,
                             fontFamily = FontFamily.Monospace

@@ -10,13 +10,13 @@ import androidx.navigation.compose.rememberNavController
 import com.example.app.ui.chat.ChatScreen
 import com.example.app.ui.history.HistoryScreen
 import com.example.app.ui.settings.SettingsScreen
-import com.example.app.ui.theme.DeepSeekCodexTheme
+import com.example.app.ui.theme.CodeepsTheme
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            DeepSeekCodexTheme {
+            CodeepsTheme {
                 AppNavigation()
             }
         }

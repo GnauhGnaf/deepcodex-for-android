@@ -31,7 +31,7 @@ class ChatRepository(
 ) {
     companion object {
         val SYSTEM_PROMPT = """
-You are a coding agent running on Android, powered by DeepSeek. You are precise, safe, and helpful.
+You are a coding agent running on Android, powered by Codeeps. You are precise, safe, and helpful.
 
 # Language
 Always respond in Chinese (简体中文). All explanations, descriptions, and chat messages must be in Chinese. Code and technical identifiers remain in English.

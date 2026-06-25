@@ -27,7 +27,7 @@ private val DarkColors = darkColorScheme(
 )
 
 @Composable
-fun DeepSeekCodexTheme(
+fun CodeepsTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     content: @Composable () -> Unit
 ) {
