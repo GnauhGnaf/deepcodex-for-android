@@ -78,6 +78,9 @@ dependencies {
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 
+    // Image loading
+    implementation("io.coil-kt:coil-compose:2.6.0")
+
     // Markdown (0.35.0 full GFM table, code highlight, image support)
     implementation("com.mikepenz:multiplatform-markdown-renderer:0.28.0")
     implementation("com.mikepenz:multiplatform-markdown-renderer-m3:0.28.0")

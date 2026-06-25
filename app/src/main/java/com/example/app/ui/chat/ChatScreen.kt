@@ -160,6 +160,7 @@ fun ChatScreen(
     if (showFileBrowser) {
         WorkspaceFileDialog(
             workspaceDir = app.container.toolExecutor.workspaceDir,
+            linuxEnv = app.container.linuxEnvironment,
             onDismiss = { showFileBrowser = false }
         )
     }

@@ -19,6 +19,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.example.app.domain.LinuxEnvironment
+import com.example.app.ui.viewer.FileViewerDialog
 import com.example.app.util.FileExportUtil
 import kotlinx.coroutines.launch
 import java.io.File
@@ -26,9 +28,11 @@ import java.io.File
 @Composable
 fun WorkspaceFileDialog(
     workspaceDir: File,
+    linuxEnv: LinuxEnvironment? = null,
     onDismiss: () -> Unit
 ) {
     var currentDir by remember { mutableStateOf(workspaceDir) }
+    var viewingFile by remember { mutableStateOf<File?>(null) }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
@@ -110,6 +114,7 @@ fun WorkspaceFileDialog(
                         items(files, key = { it.absolutePath }) { file ->
                             FileRow(
                                 file = file,
+                                onView = { viewingFile = file },
                                 onClick = {
                                     if (file.isDirectory) {
                                         currentDir = file
@@ -134,11 +139,16 @@ fun WorkspaceFileDialog(
                 }
             }
         }
+
+        // File viewer overlay
+        viewingFile?.let { file ->
+            FileViewerDialog(file = file, onDismiss = { viewingFile = null }, linuxEnv = linuxEnv, workspaceDir = workspaceDir)
+        }
     }
 }
 
 @Composable
-private fun FileRow(file: File, onClick: () -> Unit) {
+private fun FileRow(file: File, onView: () -> Unit, onClick: () -> Unit) {
     val sizeText = if (file.isFile) formatFileSize(file.length()) else ""
 
     Row(
@@ -173,12 +183,29 @@ private fun FileRow(file: File, onClick: () -> Unit) {
             }
         }
         if (file.isFile) {
-            Text(
-                text = "下载",
-                style = MaterialTheme.typography.labelSmall,
-                color = CodexPink,
-                fontSize = 11.sp
-            )
+            TextButton(
+                onClick = onView,
+                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                modifier = Modifier.height(28.dp)
+            ) {
+                Text(
+                    text = "查看",
+                    color = MaterialTheme.colorScheme.primary,
+                    fontSize = 11.sp
+                )
+            }
+            Spacer(Modifier.width(2.dp))
+            TextButton(
+                onClick = onClick,
+                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                modifier = Modifier.height(28.dp)
+            ) {
+                Text(
+                    text = "下载",
+                    color = CodexPink,
+                    fontSize = 11.sp
+                )
+            }
         }
     }
 }

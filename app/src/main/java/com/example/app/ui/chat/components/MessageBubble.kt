@@ -18,6 +18,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.app.App
@@ -286,14 +287,13 @@ private fun ThinkingBlock(reasoning: String, isThinking: Boolean) {
 }
 
 // ────────────────────────────────────────────────────────────
-// Tool call — Claude Code terminal format
-//   ⏺ name(args)
-//     ⎿  result (markdown-rendered)
+// Tool call — collapsed by default, click to expand
 // ────────────────────────────────────────────────────────────
 @Composable
 private fun ToolCallRow(toolCall: UIToolCall) {
     val isRunning = toolCall.status == "running"
     val isError = toolCall.status == "error"
+    val hasResult = toolCall.result.isNotBlank()
 
     val accentColor = when {
         isRunning -> MaterialTheme.colorScheme.primary
@@ -301,24 +301,75 @@ private fun ToolCallRow(toolCall: UIToolCall) {
         else -> CodexPink
     }
 
-    Column(modifier = Modifier.padding(vertical = 2.dp)) {
-        // ⏺ tool_name
-        Text(
-            text = "⏺ ${toolCall.name}",
-            style = MaterialTheme.typography.bodySmall.copy(
-                fontFamily = FontFamily.Monospace,
-                fontWeight = FontWeight.Medium
-            ),
-            fontSize = 12.sp,
-            color = accentColor
-        )
+    var expanded by remember { mutableStateOf(false) }
 
-        // ⎿  result as markdown
-        if (toolCall.result.isNotBlank()) {
+    // One-line summary for collapsed state
+    val summary = if (!expanded && hasResult) {
+        toolCall.result.lines().firstOrNull { it.isNotBlank() }?.take(80) ?: ""
+    } else ""
+
+    Column(modifier = Modifier.padding(vertical = 1.dp)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(4.dp))
+                .then(if (hasResult) Modifier.clickable { expanded = !expanded } else Modifier)
+                .padding(vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                text = "⏺ ${toolCall.name}",
+                style = MaterialTheme.typography.bodySmall.copy(
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Medium
+                ),
+                fontSize = 12.sp,
+                color = accentColor
+            )
+            Text(
+                text = when {
+                    isRunning -> "执行中…"
+                    isError -> "失败"
+                    else -> "完成"
+                },
+                style = MaterialTheme.typography.labelSmall,
+                fontSize = 10.sp,
+                color = accentColor.copy(alpha = 0.7f)
+            )
+            Spacer(Modifier.weight(1f))
+            if (hasResult) {
+                Icon(
+                    if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                    contentDescription = if (expanded) "收起" else "展开",
+                    modifier = Modifier.size(14.dp),
+                    tint = MaterialTheme.colorScheme.outline
+                )
+            }
+        }
+
+        // Collapsed summary line
+        if (summary.isNotBlank()) {
+            Text(
+                text = summary,
+                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(start = 12.dp)
+            )
+        }
+
+        AnimatedVisibility(
+            visible = expanded && hasResult,
+            enter = expandVertically(),
+            exit = shrinkVertically()
+        ) {
             val resultColor = if (isError) MaterialTheme.colorScheme.error.copy(alpha = 0.7f)
                 else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f)
 
-            Row(modifier = Modifier.padding(start = 4.dp, top = 2.dp)) {
+            Row(modifier = Modifier.padding(start = 4.dp, top = 2.dp, bottom = 2.dp)) {
                 Text(
                     text = "⏿",
                     style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
