@@ -7,7 +7,8 @@ import java.io.File
 
 class RunCommandTool(
     private val workspaceDir: File,
-    private val linuxEnv: LinuxEnvironment
+    private val linuxEnv: LinuxEnvironment,
+    private val sharedSkillsDir: File? = null
 ) : Tool {
     override val name = "run_command"
 
@@ -19,7 +20,11 @@ class RunCommandTool(
         }
 
         return try {
-            val result = linuxEnv.execCommand(command, workspaceDir)
+            val extraMounts = mutableListOf<Pair<String, String>>()
+            if (sharedSkillsDir != null && sharedSkillsDir.exists()) {
+                extraMounts.add(sharedSkillsDir.absolutePath to "/skills")
+            }
+            val result = linuxEnv.execCommand(command, workspaceDir, extraBindMounts = extraMounts)
             if (!result.success) {
                 ToolResult("", name, false, "退出码: ${result.exitCode}\n${result.output}")
             } else {

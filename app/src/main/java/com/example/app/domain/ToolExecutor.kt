@@ -5,7 +5,11 @@ import com.example.app.domain.tools.*
 import kotlinx.serialization.json.Json
 import java.io.File
 
-class ToolExecutor(initialWorkspaceDir: File, private val linuxEnv: LinuxEnvironment) {
+class ToolExecutor(
+    initialWorkspaceDir: File,
+    private val linuxEnv: LinuxEnvironment,
+    private val sharedSkillsDir: File? = null
+) {
 
     @Volatile
     var workspaceDir: File = initialWorkspaceDir
@@ -20,11 +24,11 @@ class ToolExecutor(initialWorkspaceDir: File, private val linuxEnv: LinuxEnviron
     }
 
     private fun createTools(dir: File): Map<String, Tool> = listOf(
-        ReadFileTool(dir),
-        WriteFileTool(dir),
-        ListFilesTool(dir),
-        SearchFilesTool(dir),
-        RunCommandTool(dir, linuxEnv)
+        ReadFileTool(dir, sharedSkillsDir),
+        WriteFileTool(dir, sharedSkillsDir),
+        ListFilesTool(dir, sharedSkillsDir),
+        SearchFilesTool(dir, sharedSkillsDir),
+        RunCommandTool(dir, linuxEnv, sharedSkillsDir)
     ).associateBy { it.name }
 
     suspend fun execute(name: String, arguments: String): ToolResult {

@@ -5,6 +5,8 @@ import android.system.Os
 import android.system.ErrnoException
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
 import java.io.File
@@ -21,17 +23,28 @@ class LinuxEnvironment(context: Context) {
     private val rootfsDir = File(envDir, "rootfs")
     private val tmpDir = File(envDir, "tmp")
     private val setupMarker = File(envDir, "setup.done")
+    private val pipMarker = File(envDir, "pip.done")
+    private val setupMutex = Mutex()
 
     val isReady: Boolean get() = setupMarker.exists() && File(rootfsDir, "usr/bin/python3.14").exists()
 
-    suspend fun setup(): Result<String> = withContext(Dispatchers.IO) {
+    suspend fun setup(): Result<String> = setupMutex.withLock {
+        withContext(Dispatchers.IO) {
         try {
-            if (isReady) return@withContext Result.success("Linux 环境已就绪")
+            if (isReady && pipMarker.exists()) return@withContext Result.success("Linux 环境已就绪")
+
+            // Quick pip fix for old installations that are "ready" but lack pip config
+            if (isReady && !pipMarker.exists()) {
+                configurePip()
+                pipMarker.writeText("ok")
+                return@withContext Result.success("Linux 环境已就绪（已补充 pip 配置）")
+            }
+
             val log = StringBuilder()
             val abi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: "x86_64"
 
             // --- Step 1: Prepare directories & verify proot ---
-            log.appendLine("[1/5] 准备环境...")
+            log.appendLine("[1/6] 准备环境...")
             tmpDir.mkdirs(); envDir.mkdirs(); rootfsDir.mkdirs()
             Log.d("LinuxEnv", "ABI=$abi, proot=${prootBin.absolutePath}")
 
@@ -45,7 +58,7 @@ class LinuxEnvironment(context: Context) {
             rootfsLoader.setExecutable(true)
 
             // --- Step 2: Extract rootfs ---
-            log.appendLine("[2/5] 解压 Alpine Linux 根文件系统...")
+            log.appendLine("[2/6] 解压 Alpine Linux 根文件系统...")
             val rootfsAsset = "rootfs/alpine-minirootfs-${
                 when { abi.contains("arm64") || abi.contains("aarch64") -> "aarch64"; else -> "x86_64" }
             }.tar"
@@ -102,7 +115,7 @@ class LinuxEnvironment(context: Context) {
             }
 
             // --- Step 3: Create symlinks ---
-            log.appendLine("[3/5] 创建符号链接...")
+            log.appendLine("[3/6] 创建符号链接...")
             var linksOk = 0; var linksFail = 0
             for ((destFile, target) in symlinks) {
                 try {
@@ -147,7 +160,7 @@ class LinuxEnvironment(context: Context) {
             File(rootfsDir, "workspace").mkdirs()
 
             // --- Step 4: Smoke test proot (echo is builtin, no fork needed) ---
-            log.appendLine("[4/5] 测试 proot...")
+            log.appendLine("[4/6] 测试 proot...")
             val rEcho = execRaw("echo proot_ok", 5)
             Log.d("LinuxEnv", "echo test: exit=${rEcho.exitCode} out=${rEcho.output}")
             if (!rEcho.success) {
@@ -166,12 +179,14 @@ class LinuxEnvironment(context: Context) {
                 Log.e("LinuxEnv", "fork still failing after retries, will try python3 directly")
             }
 
-            // --- Step 5: Test Python ---
-            log.appendLine("[5/5] 测试 Python...")
+            // --- Step 5: Configure pip ---
+            log.appendLine("[5/6] 配置 pip...")
+            configurePip()
+            pipMarker.writeText("ok")
+            log.appendLine("  ✓ pip 已配置")
 
-            // Pre-configure pip: remove EXTERNALLY-MANAGED restriction, set mirror, allow system-wide
-            execRaw("rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED 2>/dev/null; pip config set global.break-system-packages true 2>&1 || true", 10)
-            execRaw("pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple 2>&1 || true", 30)
+            // Step 6: Test Python
+            log.appendLine("[6/6] 测试 Python...")
 
             for (attempt in 1..3) {
                 val rPy = execRaw("python3 --version 2>&1", 10)
@@ -204,16 +219,41 @@ class LinuxEnvironment(context: Context) {
             Result.failure(e)
         }
     }
+    }
+
+    private fun configurePip() {
+        // Remove EXTERNALLY-MANAGED files that block pip install
+        execRaw("find /usr/lib/python3* -name EXTERNALLY-MANAGED -delete 2>/dev/null || true", 10)
+
+        // Write pip.conf — use mkdir + echo (heredoc unreliable through proot args)
+        execRaw("mkdir -p /root/.config/pip", 3)
+        execRaw("echo '[global]' > /root/.config/pip/pip.conf", 3)
+        execRaw("echo 'break-system-packages = true' >> /root/.config/pip/pip.conf", 3)
+        execRaw("echo 'index-url = https://pypi.tuna.tsinghua.edu.cn/simple' >> /root/.config/pip/pip.conf", 3)
+        execRaw("echo 'trusted-host = pypi.tuna.tsinghua.edu.cn' >> /root/.config/pip/pip.conf", 3)
+        execRaw("chmod 644 /root/.config/pip/pip.conf", 3)
+
+        // Verify, fallback to pip config set if needed
+        val pipCfg = execRaw("cat /root/.config/pip/pip.conf 2>&1", 5)
+        Log.d("LinuxEnv", "pip.conf: ${pipCfg.output}")
+        if (!pipCfg.success || !pipCfg.output.contains("break-system-packages")) {
+            Log.w("LinuxEnv", "pip.conf echo write failed, trying pip config set")
+            execRaw("pip config set global.break-system-packages true 2>&1 || true", 15)
+            execRaw("pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple 2>&1 || true", 15)
+        }
+    }
 
     suspend fun execCommand(
         command: String,
         workspaceDir: File,
-        timeoutSeconds: Long = 30
+        timeoutSeconds: Long = 120,
+        extraBindMounts: List<Pair<String, String>> = emptyList()
     ): ProcessResult = withContext(Dispatchers.IO) {
+        val mounts = listOf(workspaceDir.absolutePath to "/workspace") + extraBindMounts
         execRaw(
             "cd /workspace && $command",
             timeoutSeconds,
-            bindMounts = listOf(workspaceDir.absolutePath to "/workspace")
+            bindMounts = mounts
         )
     }
 

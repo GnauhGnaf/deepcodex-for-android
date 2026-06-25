@@ -37,18 +37,22 @@ class DeepSeekClient {
             .post(jsonBody.toRequestBody("application/json".toMediaType()))
             .build()
 
-        client.newCall(httpRequest).enqueue(object : Callback {
+        val call = client.newCall(httpRequest)
+        call.enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
                 close(e)
             }
 
             override fun onResponse(call: Call, response: Response) {
                 if (!response.isSuccessful) {
-                    close(IOException("HTTP ${response.code}: ${response.body?.string()}"))
+                    val body = response.body?.string()
+                    response.close()
+                    close(IOException("HTTP ${response.code}: $body"))
                     return
                 }
 
                 val body = response.body ?: run {
+                    response.close()
                     close(IOException("Empty response body"))
                     return
                 }
@@ -93,6 +97,6 @@ class DeepSeekClient {
             }
         })
 
-        awaitClose()
+        awaitClose { call.cancel() }
     }
 }

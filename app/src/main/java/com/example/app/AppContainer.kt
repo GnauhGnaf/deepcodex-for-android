@@ -10,6 +10,7 @@ import com.example.app.data.repository.SettingsRepository
 import com.example.app.domain.LinuxEnvironment
 import com.example.app.domain.ToolExecutor
 import com.example.app.util.ConversationManager
+import com.example.app.util.SkillManager
 import java.io.File
 
 class AppContainer(context: Context) {
@@ -22,6 +23,13 @@ class AppContainer(context: Context) {
     val conversationStore = ConversationStore(appContext)
     val deepSeekClient = DeepSeekClient()
 
+    // Shared skills directory — initialized once, used by all workspaces
+    val sharedSkillsDir: File = SkillManager.sharedSkillsDir(appContext.filesDir)
+
+    init {
+        SkillManager.initSkills(appContext, appContext.filesDir)
+    }
+
     // Current conversation tracking
     var currentConversationId: String? = null
         internal set
@@ -29,7 +37,7 @@ class AppContainer(context: Context) {
     private fun getWorkspaceDir(): File =
         appContext.filesDir.resolve("workspace/${currentConversationId ?: "default"}").also { it.mkdirs() }
 
-    var toolExecutor: ToolExecutor = ToolExecutor(getWorkspaceDir(), linuxEnvironment)
+    var toolExecutor: ToolExecutor = ToolExecutor(getWorkspaceDir(), linuxEnvironment, sharedSkillsDir)
         private set
 
     val chatRepository = ChatRepository(
@@ -43,7 +51,7 @@ class AppContainer(context: Context) {
     fun switchConversation(conversationId: String?) {
         currentConversationId = conversationId
         val newDir = getWorkspaceDir()
-        toolExecutor = ToolExecutor(newDir, linuxEnvironment)
+        toolExecutor = ToolExecutor(newDir, linuxEnvironment, sharedSkillsDir)
     }
 
     // Used by ChatScreen — observable state for pending conversation actions

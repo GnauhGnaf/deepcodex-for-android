@@ -7,10 +7,14 @@ import androidx.lifecycle.viewModelScope
 import com.example.app.App
 import com.example.app.data.api.models.ToolResult
 import com.example.app.data.repository.StreamEvent
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 
 sealed class ContentBlock {
     data class Reasoning(val text: String) : ContentBlock()
@@ -23,7 +27,8 @@ data class UIMessage(
     val role: String,
     val blocks: List<ContentBlock> = emptyList(),
     val isStreaming: Boolean = false,
-    val isThinking: Boolean = false
+    val isThinking: Boolean = false,
+    val outputFiles: List<String> = emptyList()
 ) {
     val content: String get() = blocks.filterIsInstance<ContentBlock.Text>().joinToString("") { it.text }
     val toolCallHistory: List<UIToolCall> get() = blocks.filterIsInstance<ContentBlock.ToolCalls>().flatMap { it.calls }
@@ -50,6 +55,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private var currentAssistantMsg: UIMessage? = null
     private val pendingToolCalls = mutableMapOf<Int, UIToolCall>()
     private var currentJob: Job? = null
+    private var workspaceSnapshot: Set<String> = emptySet()
 
     init {
         startNewConversation()
@@ -127,7 +133,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
-        return uiMessages
+        // Post-process: fill in outputFiles after tool results are populated
+        return uiMessages.map { msg ->
+            if (msg.role == "assistant") msg.copy(outputFiles = extractOutputFiles(msg)) else msg
+        }
     }
 
     private suspend fun persistCurrentConversation() {
@@ -147,7 +156,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
         currentJob = viewModelScope.launch {
             try {
-                repo.sendMessage(text).collect { event ->
+                workspaceSnapshot = withContext(Dispatchers.IO) { snapshotWorkspaceFiles() }
+                val resolved = resolveSlashCommand(text)
+                repo.sendMessage(resolved).collect { event ->
                     when {
                         event.thinking -> setAssistantThinking(true)
 
@@ -158,6 +169,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
                         event.error != null -> {
                             appendToAssistant("\n\n**❌ 错误：** ${event.error}")
+                            finalizeAssistant()
                             _isLoading.value = false
                         }
 
@@ -180,16 +192,18 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         event.toolResult != null -> {
                             val result = event.toolResult
                             Log.d("ChatVM", "ToolResult: id=${result.toolCallId} name=${result.name} success=${result.success} outputLen=${result.output.length}")
-                            pendingToolCalls.values.find { it.id == result.toolCallId || it.name == result.name }?.let { existing ->
+                            // Match by ID first, fallback to name (avoids false match when multiple calls share a name)
+                            val entry = pendingToolCalls.entries.firstOrNull { it.value.id == result.toolCallId }
+                                ?: pendingToolCalls.entries.firstOrNull { it.value.name == result.name }
+                            if (entry != null) {
+                                val (key, existing) = entry
                                 Log.d("ChatVM", "  Matched existing: id=${existing.id} name=${existing.name}")
                                 val updated = existing.copy(
                                     status = if (result.success) "done" else "error",
                                     result = result.output
                                 )
-                                pendingToolCalls.entries.find { it.value.id == existing.id }?.let { entry ->
-                                    pendingToolCalls[entry.key] = updated
-                                }
-                            } ?: run {
+                                pendingToolCalls[key] = updated
+                            } else {
                                 Log.d("ChatVM", "  Fallback: no match found, adding new entry")
                                 val idx = pendingToolCalls.size
                                 pendingToolCalls[idx] = UIToolCall(
@@ -209,10 +223,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     }
                 }
-            } catch (e: Exception) {
-                appendToAssistant("\n\n**❌ 网络错误：** ${e.message}")
-                _isLoading.value = false
+            } catch (e: CancellationException) {
+                // Normal cancellation — just finalize and suppress
                 finalizeAssistant()
+                _isLoading.value = false
+                throw e
+            } catch (e: Exception) {
+                appendToAssistant("\n\n**❌ 错误：** ${e.message}")
+                finalizeAssistant()
+                _isLoading.value = false
             }
             currentJob = null
         }
@@ -223,6 +242,45 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         currentJob = null
         finalizeAssistant()
         _isLoading.value = false
+    }
+
+    /**
+     * Detect /skill-name prefix and inject the skill's SKILL.md content.
+     * Cleans Windows-specific paths for the Android proot environment.
+     * If no user message follows the skill name, prompts the AI to wait for instructions.
+     */
+    private suspend fun resolveSlashCommand(text: String): String = withContext(Dispatchers.IO) {
+        val trimmed = text.trimStart()
+        if (!trimmed.startsWith("/")) return@withContext text
+
+        val parts = trimmed.split("\\s+".toRegex(), limit = 2)
+        val skillName = parts[0].removePrefix("/").lowercase()
+        val userMessage = parts.getOrElse(1) { "" }.trim()
+
+        val skillsDir = app.container.sharedSkillsDir
+        val skillFile = File(skillsDir, "$skillName/SKILL.md")
+
+        val rawContent = when {
+            skillFile.exists() -> skillFile.readText()
+            File(skillsDir, "$skillName.md").exists() -> File(skillsDir, "$skillName.md").readText()
+            else -> return@withContext text // Unknown skill, pass through
+        }
+
+        // Clean Windows paths → Android proot paths
+        var clean = rawContent
+            .replace("C:\\\\Users\\\\27602\\\\.claude\\\\skills\\\\", "/skills/")
+            .replace("C:/Users/27602/.claude/skills/", "/skills/")
+            .replace("python scripts/", "python3 /skills/$skillName/scripts/")
+            .replace("python3 scripts/", "python3 /skills/$skillName/scripts/")
+            .replace("bash scripts/", "sh /skills/$skillName/scripts/")
+
+        val instruction = if (userMessage.isEmpty()) {
+            "**用户通过 /$skillName 加载了此技能，但未指定具体任务。请介绍该技能的功能和可用的脚本，询问用户需要做什么。**"
+        } else {
+            "用户消息:\n$userMessage"
+        }
+
+        return@withContext "[技能已加载: $skillName]\n\n$clean\n\n---\n$instruction"
     }
 
     private fun ensureAssistant(): UIMessage {
@@ -286,10 +344,45 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun finalizeAssistant() {
         val current = currentAssistantMsg ?: return
-        val updated = current.copy(isStreaming = false)
+        val files = extractOutputFiles(current)
+        val updated = current.copy(isStreaming = false, outputFiles = files)
         currentAssistantMsg = null
         pendingToolCalls.clear()
         updateInList(updated)
+    }
+
+    private fun extractOutputFiles(msg: UIMessage): List<String> {
+        val fromWriteFile = msg.blocks.filterIsInstance<ContentBlock.ToolCalls>()
+            .flatMap { it.calls }
+            .filter { it.name == "write_file" && it.status == "done" }
+            .mapNotNull { extractFilePath(it.result) }
+
+        // Also detect files created by run_command or scripts (e.g. docx generation)
+        val workspaceDir = app.container.toolExecutor.workspaceDir
+        val currentFiles = try {
+            workspaceDir.walkTopDown().filter { it.isFile }.map { it.relativeTo(workspaceDir).path }.toSet()
+        } catch (_: Exception) { emptySet<String>() }
+
+        val newFiles = if (workspaceSnapshot.isNotEmpty()) {
+            (currentFiles - workspaceSnapshot).filter { !it.startsWith(".") }
+        } else {
+            emptySet()
+        }
+        workspaceSnapshot = emptySet()
+
+        return (fromWriteFile.toSet() + newFiles).toList()
+    }
+
+    private fun snapshotWorkspaceFiles(): Set<String> {
+        val dir = app.container.toolExecutor.workspaceDir
+        return try {
+            dir.walkTopDown().filter { it.isFile }.map { it.relativeTo(dir).path }.toSet()
+        } catch (_: Exception) { emptySet() }
+    }
+
+    private fun extractFilePath(result: String): String? {
+        val regex = Regex("文件已写入:\\s*(.+?)\\s*\\(\\d+\\s*字符\\)")
+        return regex.find(result)?.groupValues?.get(1)?.trim()
     }
 
     private fun updateInList(msg: UIMessage) {

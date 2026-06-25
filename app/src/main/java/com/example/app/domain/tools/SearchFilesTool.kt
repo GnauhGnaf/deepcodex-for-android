@@ -5,20 +5,30 @@ import com.example.app.domain.Tool
 import java.io.File
 import java.nio.file.FileSystems
 
-class SearchFilesTool(private val workspaceDir: File) : Tool {
+class SearchFilesTool(private val workspaceDir: File, private val sharedSkillsDir: File? = null) : Tool {
     override val name = "search_files"
 
     override suspend fun execute(arguments: Map<String, String>): ToolResult {
         val pattern = arguments["pattern"] ?: return ToolResult("", name, false, "缺少参数: pattern")
         return try {
-            val workspacePath = workspaceDir.canonicalPath.replace("\\", "/")
-            val patternFull = "glob:$workspacePath/$pattern"
+            // If pattern targets .codex/skills, redirect to shared directory
+            val searchRoot = if (sharedSkillsDir != null && pattern.startsWith(".codex/skills")) {
+                sharedSkillsDir
+            } else {
+                workspaceDir
+            }
+            val patternSuffix = if (sharedSkillsDir != null && pattern.startsWith(".codex/skills")) {
+                pattern.removePrefix(".codex/skills/")
+            } else {
+                pattern
+            }
+            val rootPath = searchRoot.canonicalPath.replace("\\", "/")
+            val patternFull = "glob:$rootPath/$patternSuffix"
             val matcher = FileSystems.getDefault().getPathMatcher(patternFull)
 
             val matches = mutableListOf<String>()
-            workspaceDir.walkTopDown().forEach { file ->
-                val relPath = file.toRelativeString(workspaceDir)
-                val absPath = file.toPath().toString().replace("\\", "/")
+            searchRoot.walkTopDown().forEach { file ->
+                val relPath = file.toRelativeString(searchRoot)
                 if (matcher.matches(file.toPath())) {
                     val prefix = if (file.isDirectory) "[D]" else "[F]"
                     matches.add("  $prefix $relPath")

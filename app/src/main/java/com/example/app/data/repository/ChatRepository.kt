@@ -6,6 +6,7 @@ import com.example.app.domain.LinuxEnvironment
 import com.example.app.domain.ToolDefinitions
 import com.example.app.domain.ToolExecutor
 import com.example.app.util.ConversationManager
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
@@ -41,7 +42,7 @@ You are working inside an Alpine Linux (proot) environment on Android. The works
 Available runtimes:
 - **Shell scripts**: Write .sh files and run with `run_command`. Full sh scripting.
 - **Python 3**: Pre-installed. Write .py files and run with `run_command python3 script.py`.
-- **pip install (CRITICAL)**: Just run `run_command pip install <package>` directly. The system is pre-configured — NO virtual environments, NO --break-system-packages flag needed. Mirror is Tsinghua (https://pypi.tuna.tsinghua.edu.cn/simple). You are NOT in a restricted environment.
+- **pip install**: Run `run_command pip install <package>`. The system is pre-configured with Tsinghua mirror and allows system-wide installs. If `pip install <pkg>` fails, try `pip install <pkg> --break-system-packages` as fallback. NO virtual environments needed.
 - **C/C++**: Install build tools if needed with `apk add build-base`.
 - **Any Alpine package**: `apk add <pkg>` via `run_command`.
 
@@ -59,6 +60,17 @@ ALL file tools (read_file, write_file, list_files) use relative paths. The works
   ✓ Correct: "fibonacci.py", "src/main.py"
   ✗ Wrong:   "/workspace/fibonacci.py", "/workspace/src/main.py"
 run_command executes inside /workspace (proot Linux), so shell commands see files at /workspace/fibonacci.py. This is the only tool where you use /workspace paths when running commands.
+
+# Skills
+You have access to **skills** — curated guides for common tasks. Skills are stored as directories under `.codex/skills/`, each containing a `SKILL.md` file plus optional scripts and references.
+- List available skills: use `list_files` on `.codex/skills` — each directory is a skill
+- Read a skill: use `read_file` on `.codex/skills/<skill-name>/SKILL.md`
+- Skill scripts: Python/Shell scripts inside skill directories can be run via `run_command`. Example: `run_command python3 /skills/ocr-image/scripts/ocr.py image.jpg`
+- Install new skills: use `run_command sh /skills/skills.sh list` to browse, then `run_command sh /skills/skills.sh install <name>` to install from skills.sh registry
+- Create a new skill: use `write_file` to create `.codex/skills/<skill-name>/SKILL.md`
+- When starting a task, check if any relevant skill exists and read it first
+- Skills provide environment-specific best practices and templates
+- If no skill matches the task, proceed normally with your own expertise
 
 # Tools at your disposal
 - read_file: Read a file in the workspace. path is relative (e.g. "fibonacci.py"), do NOT add /workspace
@@ -111,48 +123,73 @@ run_command executes inside /workspace (proot Linux), so shell commands see file
             emit(StreamEvent(textDelta = "${setupResult.getOrThrow()}\n\n"))
         }
 
-        // No hard turn limit — same as Codex's `loop {}`.
-        // The model breaks naturally via finish_reason:stop, or the
-        // context window bounds it.
-        while (true) {
+        var turnCount = 0
+        val maxTurns = 50
+
+        while (turnCount < maxTurns) {
+            turnCount++
             val request = buildRequest(model)
             val toolCalls = mutableMapOf<Int, ToolCallBuilder>()
             val accumulatedText = StringBuilder()
             var isThinking = false
 
-            client.streamChat(apiKey, baseUrl, request).collect { chunk ->
-                if (chunk.choices.isEmpty()) return@collect
-                val choice = chunk.choices[0]
-                val delta = choice.delta
+            // Retry wrapper for network errors
+            var lastError: Throwable? = null
+            var success = false
+            for (attempt in 1..3) {
+                try {
+                    client.streamChat(apiKey, baseUrl, request).collect { chunk ->
+                        if (chunk.choices.isEmpty()) return@collect
+                        val choice = chunk.choices[0]
+                        val delta = choice.delta
 
-                if (delta.reasoningContent != null && delta.content == null) {
-                    if (!isThinking) {
-                        isThinking = true
-                        emit(StreamEvent(thinking = true))
-                    }
-                    emit(StreamEvent(reasoningDelta = delta.reasoningContent))
-                    return@collect
-                }
-                if (delta.content != null) {
-                    if (isThinking) {
-                        isThinking = false
-                        emit(StreamEvent(thinking = false))
-                    }
-                    accumulatedText.append(delta.content)
-                    emit(StreamEvent(textDelta = delta.content))
-                }
+                        if (delta.reasoningContent != null && delta.content == null) {
+                            if (!isThinking) {
+                                isThinking = true
+                                emit(StreamEvent(thinking = true))
+                            }
+                            emit(StreamEvent(reasoningDelta = delta.reasoningContent))
+                            return@collect
+                        }
+                        if (delta.content != null) {
+                            if (isThinking) {
+                                isThinking = false
+                                emit(StreamEvent(thinking = false))
+                            }
+                            accumulatedText.append(delta.content)
+                            emit(StreamEvent(textDelta = delta.content))
+                        }
 
-                if (delta.toolCalls != null) {
-                    for (tc in delta.toolCalls) {
-                        val builder = toolCalls.getOrPut(tc.index) { ToolCallBuilder() }
-                        if (tc.id != null) builder.id = tc.id
-                        if (tc.function?.name != null) builder.name = tc.function.name
-                        if (tc.function?.arguments != null) builder.args.append(tc.function.arguments)
-                        if (builder.id != null && builder.name != null) {
-                            emit(StreamEvent(toolCallStart = tc))
+                        if (delta.toolCalls != null) {
+                            for (tc in delta.toolCalls) {
+                                val builder = toolCalls.getOrPut(tc.index) { ToolCallBuilder() }
+                                if (tc.id != null) builder.id = tc.id
+                                if (tc.function?.name != null) builder.name = tc.function.name
+                                if (tc.function?.arguments != null) builder.args.append(tc.function.arguments)
+                                if (builder.id != null && builder.name != null) {
+                                    // Emit accumulated builder state — raw delta may lack id during streaming
+                                    emit(StreamEvent(toolCallStart = ToolCallDelta(
+                                        index = tc.index,
+                                        id = builder.id,
+                                        function = FunctionDelta(name = builder.name, arguments = builder.args.toString())
+                                    )))
+                                }
+                            }
                         }
                     }
+                    success = true
+                    break
+                } catch (e: Exception) {
+                    lastError = e
+                    if (attempt < 3) {
+                        val backoff = (attempt * 1000).coerceAtMost(3000).toLong()
+                        delay(backoff)
+                    }
                 }
+            }
+            if (!success) {
+                emit(StreamEvent(error = "请求失败: ${lastError?.message}"))
+                break
             }
 
             if (toolCalls.isNotEmpty()) {
@@ -166,9 +203,19 @@ run_command executes inside /workspace (proot Linux), so shell commands see file
                 conversationManager.addAssistant(content = text, toolCalls = assistantToolCalls)
 
                 for (tc in assistantToolCalls) {
-                    val result = toolExecutorProvider().execute(tc.function.name, tc.function.arguments)
-                    emit(StreamEvent(toolResult = result.copy(toolCallId = tc.id)))
-                    conversationManager.addToolResult(tc.id, result.name, result.output)
+                    try {
+                        val result = toolExecutorProvider().execute(tc.function.name, tc.function.arguments)
+                        emit(StreamEvent(toolResult = result.copy(toolCallId = tc.id)))
+                        conversationManager.addToolResult(tc.id, result.name, result.output)
+                    } catch (e: Exception) {
+                        emit(StreamEvent(toolResult = ToolResult(
+                            toolCallId = tc.id,
+                            name = tc.function.name,
+                            success = false,
+                            output = "工具执行异常: ${e.message}"
+                        )))
+                        conversationManager.addToolResult(tc.id, tc.function.name, "工具执行异常: ${e.message}")
+                    }
                 }
                 continue
             } else {
@@ -182,6 +229,9 @@ run_command executes inside /workspace (proot Linux), so shell commands see file
                 }
                 break
             }
+        }
+        if (turnCount >= maxTurns) {
+            emit(StreamEvent(error = "工具调用次数已达上限（${maxTurns}），已停止执行。"))
         }
 
         emit(StreamEvent(done = true))

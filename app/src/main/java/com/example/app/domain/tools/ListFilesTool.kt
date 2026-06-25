@@ -2,17 +2,19 @@ package com.example.app.domain.tools
 
 import com.example.app.data.api.models.ToolResult
 import com.example.app.domain.Tool
+import com.example.app.domain.tools.PathUtil.isPathSafe
+import com.example.app.domain.tools.PathUtil.resolvePath
 import com.example.app.domain.tools.PathUtil.stripWorkspacePrefix
 import java.io.File
 
-class ListFilesTool(private val workspaceDir: File) : Tool {
+class ListFilesTool(private val workspaceDir: File, private val sharedSkillsDir: File? = null) : Tool {
     override val name = "list_files"
 
     override suspend fun execute(arguments: Map<String, String>): ToolResult {
         val rawPath = arguments["path"]?.takeIf { it.isNotBlank() } ?: ""
         val subPath = stripWorkspacePrefix(rawPath)
-        val dir = if (subPath.isEmpty()) workspaceDir else File(workspaceDir, subPath).canonicalFile
-        if (!dir.path.startsWith(workspaceDir.canonicalPath)) {
+        val dir = if (subPath.isEmpty()) workspaceDir else resolvePath(rawPath, workspaceDir, sharedSkillsDir)
+        if (!isPathSafe(dir, workspaceDir, sharedSkillsDir)) {
             return ToolResult("", name, false, "路径越界: $subPath")
         }
         if (!dir.exists()) {
