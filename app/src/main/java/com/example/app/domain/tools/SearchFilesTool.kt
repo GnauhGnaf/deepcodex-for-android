@@ -3,7 +3,6 @@ package com.example.app.domain.tools
 import com.example.app.data.api.models.ToolResult
 import com.example.app.domain.Tool
 import java.io.File
-import java.nio.file.FileSystems
 
 class SearchFilesTool(private val workspaceDir: File, private val sharedSkillsDir: File? = null) : Tool {
     override val name = "search_files"
@@ -22,14 +21,12 @@ class SearchFilesTool(private val workspaceDir: File, private val sharedSkillsDi
             } else {
                 pattern
             }
-            val rootPath = searchRoot.canonicalPath.replace("\\", "/")
-            val patternFull = "glob:$rootPath/$patternSuffix"
-            val matcher = FileSystems.getDefault().getPathMatcher(patternFull)
+            val regex = globToRegex(patternSuffix)
 
             val matches = mutableListOf<String>()
             searchRoot.walkTopDown().forEach { file ->
                 val relPath = file.toRelativeString(searchRoot)
-                if (matcher.matches(file.toPath())) {
+                if (regex.matches(relPath)) {
                     val prefix = if (file.isDirectory) "[D]" else "[F]"
                     matches.add("  $prefix $relPath")
                 }
@@ -43,5 +40,47 @@ class SearchFilesTool(private val workspaceDir: File, private val sharedSkillsDi
         } catch (e: Exception) {
             ToolResult("", name, false, "搜索失败: ${e.message}")
         }
+    }
+
+    private fun globToRegex(glob: String): Regex {
+        var sb = StringBuilder("^")
+        var i = 0
+        while (i < glob.length) {
+            when (val c = glob[i]) {
+                '*' -> {
+                    if (i + 1 < glob.length && glob[i + 1] == '*') {
+                        sb.append(".*")
+                        i += 2
+                        if (i < glob.length && glob[i] == '/') i++
+                        continue
+                    } else {
+                        sb.append("[^/]*")
+                    }
+                }
+                '?' -> sb.append("[^/]")
+                '.' -> sb.append("\\.")
+                '{' -> {
+                    val end = glob.indexOf('}', i)
+                    if (end > i) {
+                        sb.append("(")
+                        glob.substring(i + 1, end).split(',').joinTo(sb, "|")
+                        sb.append(")")
+                        i = end
+                    } else {
+                        sb.append("\\{")
+                    }
+                }
+                '[' -> sb.append('[')
+                ']' -> sb.append(']')
+                '(' -> sb.append("\\(")
+                ')' -> sb.append("\\)")
+                '+' -> sb.append("\\+")
+                '\\' -> sb.append("\\\\")
+                else -> sb.append(c)
+            }
+            i++
+        }
+        sb.append("$")
+        return Regex(sb.toString())
     }
 }

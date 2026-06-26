@@ -143,6 +143,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         app.container.saveCurrentConversation()
     }
 
+    // Save right after user message to survive crashes during API calls
+    private fun persistAfterUserMessage() {
+        viewModelScope.launch(Dispatchers.IO) {
+            app.container.saveCurrentConversation()
+        }
+    }
+
     fun sendMessage(text: String) {
         if (text.isBlank() || _isLoading.value) return
 
@@ -157,6 +164,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         currentJob = viewModelScope.launch {
             try {
                 workspaceSnapshot = withContext(Dispatchers.IO) { snapshotWorkspaceFiles() }
+                // Persist immediately after user message (before API call)
+                persistAfterUserMessage()
                 val resolved = resolveSlashCommand(text)
                 repo.sendMessage(resolved).collect { event ->
                     when {

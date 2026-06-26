@@ -8,7 +8,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
+
 import java.io.File
 import java.io.FileOutputStream
 
@@ -29,7 +29,7 @@ class LinuxEnvironment(context: Context) {
     private val fakeprocDir = File(envDir, "fakeproc")
     private val setupMutex = Mutex()
 
-    val isReady: Boolean get() = setupMarker.exists() && File(rootfsDir, "usr/bin/python3.14").exists()
+    val isReady: Boolean get() = setupMarker.exists() && (File(rootfsDir, "usr/bin/python3.14").exists() || File(rootfsDir, "usr/bin/python3").exists())
     val isLibreOfficeReady: Boolean get() = libreofficeMarker.exists()
 
     suspend fun setup(): Result<String> = setupMutex.withLock {
@@ -78,7 +78,7 @@ class LinuxEnvironment(context: Context) {
 
             val rootfsLoader = File(rootfsDir, "usr/libexec/proot/loader")
             rootfsLoader.parentFile!!.mkdirs()
-            prootLoader.copyTo(rootfsLoader, overwrite = true)
+            prootLoader.inputStream().use { src -> FileOutputStream(rootfsLoader).use { dst -> src.copyTo(dst) } }
             rootfsLoader.setExecutable(true)
 
             // --- Step 2: Extract rootfs ---
@@ -92,37 +92,9 @@ class LinuxEnvironment(context: Context) {
 
             try {
                 appContext.assets.open(rootfsAsset).use { assetStream ->
-                    TarArchiveInputStream(assetStream).use { tarIn ->
-                        var entry = tarIn.nextEntry
-                        var count = 0
-                        while (entry != null) {
-                            val destFile = File(rootfsDir, entry.name)
-                            when {
-                                entry.isDirectory -> destFile.mkdirs()
-                                entry.isSymbolicLink -> {
-                                    destFile.parentFile?.mkdirs()
-                                    symlinks.add(destFile to entry.linkName)
-                                }
-                                else -> {
-                                    destFile.parentFile?.mkdirs()
-                                    FileOutputStream(destFile).use { tarIn.copyTo(it) }
-                                    // Windows repack loses execute bits — restore for binaries/libs
-                                    val name = entry.name
-                                    if (entry.mode and 0b001_001_001 != 0
-                                        || name.contains("/bin/") || name.contains("/sbin/")
-                                        || name.endsWith(".so") || name.contains(".so.")
-                                        || name == "bin/busybox" || name.startsWith("bin/")
-                                        || name.startsWith("sbin/") || name.startsWith("lib/")
-                                    ) {
-                                        destFile.setExecutable(true)
-                                    }
-                                }
-                            }
-                            entry = tarIn.nextEntry; count++
-                            if (count % 2000 == 0) Log.d("LinuxEnv", "  $count entries...")
-                        }
-                        Log.d("LinuxEnv", "Extracted: $count entries, ${symlinks.size} symlinks")
-                    }
+                    val (count, links) = com.example.app.util.TarExtractor.extract(assetStream, rootfsDir)
+                    symlinks.addAll(links)
+                    Log.d("LinuxEnv", "Extracted: $count entries, ${symlinks.size} symlinks")
                 }
             } catch (e: Exception) {
                 Log.e("LinuxEnv", "Extraction failed", e)
@@ -131,14 +103,18 @@ class LinuxEnvironment(context: Context) {
 
             // Verify key files exist after extraction
             val pythonBin = File(rootfsDir, "usr/bin/python3.14")
+            val python3Bin = File(rootfsDir, "usr/bin/python3")
             val busyboxBin = File(rootfsDir, "bin/busybox")
             val shLink = File(rootfsDir, "bin/sh")
-            Log.d("LinuxEnv", "After extract: python3.14=${pythonBin.exists()}, busybox=${busyboxBin.exists()}, sh=${shLink.exists()}")
-            if (!pythonBin.exists()) {
-                return@withContext Result.failure(RuntimeException("python3.14 未在 rootfs 中找到"))
+            Log.d("LinuxEnv", "After extract: python3.14=${pythonBin.exists()}, python3=${python3Bin.exists()}, busybox=${busyboxBin.exists()}, sh=${shLink.exists()}")
+
+            val hasPython = pythonBin.exists() || python3Bin.exists()
+
+            if (!busyboxBin.exists()) {
+                return@withContext Result.failure(RuntimeException("busybox 未在 rootfs 中找到"))
             }
 
-            // --- Step 3: Create symlinks ---
+            // --- Step 3: Create symlinks (must happen before apk installs) ---
             log.appendLine("[3/7] 创建符号链接...")
             var linksOk = 0; var linksFail = 0
             for ((destFile, target) in symlinks) {
@@ -146,7 +122,6 @@ class LinuxEnvironment(context: Context) {
                     Os.symlink(target, destFile.absolutePath)
                     linksOk++
                 } catch (e: ErrnoException) {
-                    // Ignore EEXIST (already exists)
                     if (e.errno != 17) { Log.w("LinuxEnv", "symlink fail ${destFile.name}: ${e.message}"); linksFail++ }
                     else linksOk++
                 }
@@ -183,8 +158,21 @@ class LinuxEnvironment(context: Context) {
             File(rootfsDir, "etc/resolv.conf").writeText("nameserver 8.8.8.8\nnameserver 8.8.4.4\n")
             File(rootfsDir, "workspace").mkdirs()
 
-            // --- Step 4: Smoke test proot (echo is builtin, no fork needed) ---
-            log.appendLine("[4/7] 测试 proot...")
+            // --- Step 4: Install Python if not pre-installed ---
+            if (!hasPython) {
+                log.appendLine("[4/7] 安装 Python...")
+                val installPy = execRaw("apk add --no-cache python3 2>&1", 300)
+                Log.d("LinuxEnv", "apk add python3: exit=${installPy.exitCode}, out=${installPy.output.take(300)}")
+                if (!installPy.success && !python3Bin.exists() && !pythonBin.exists()) {
+                    return@withContext Result.failure(RuntimeException("Python 安装失败: ${installPy.output.take(200)}"))
+                }
+                log.appendLine("  ✓ Python 已安装")
+            } else {
+                log.appendLine("[4/7] Python 已预装")
+            }
+
+            // --- Step 5: Smoke test proot ---
+            log.appendLine("[5/7] 测试 proot...")
             val rEcho = execRaw("echo proot_ok", 5)
             Log.d("LinuxEnv", "echo test: exit=${rEcho.exitCode} out=${rEcho.output}")
             if (!rEcho.success) {
@@ -203,23 +191,23 @@ class LinuxEnvironment(context: Context) {
                 Log.e("LinuxEnv", "fork still failing after retries, will try python3 directly")
             }
 
-            // --- Step 5: Configure pip ---
-            log.appendLine("[5/7] 配置 pip...")
+            // --- Step 6: Configure pip ---
+            log.appendLine("[6/7] 配置 pip...")
             configurePip()
             pipMarker.writeText("ok")
             log.appendLine("  ✓ pip 已配置")
 
-            // Step 6: Configure fonts + Test Python
-            log.appendLine("[6/7] 安装中文字体...")
+            // Step 7: Configure fonts + Test Python
+            log.appendLine("[7/7] 安装中文字体...")
             configureFonts()
             fontsMarker.writeText("ok")
             log.appendLine("  ✓ 中文字体已安装")
 
-            log.appendLine("[7/7] 测试 Python...")
+            val pyCmd = if (pythonBin.exists()) "python3.14" else "python3"
 
             for (attempt in 1..3) {
-                val rPy = execRaw("python3 --version 2>&1", 10)
-                Log.d("LinuxEnv", "python3 test $attempt: exit=${rPy.exitCode} out=${rPy.output}")
+                val rPy = execRaw("$pyCmd --version 2>&1", 10)
+                Log.d("LinuxEnv", "$pyCmd test $attempt: exit=${rPy.exitCode} out=${rPy.output}")
                 if (rPy.success) {
                     log.appendLine("  ✓ ${rPy.output.trim()}")
                     setupMarker.writeText(abi)
@@ -234,14 +222,15 @@ class LinuxEnvironment(context: Context) {
                     return@withContext Result.success(log.toString())
                 }
                 if (attempt < 3) {
-                    Log.d("LinuxEnv", "python3 retry in 1s...")
+                    Log.d("LinuxEnv", "$pyCmd retry in 1s...")
                     kotlinx.coroutines.delay(1000)
                 }
             }
 
             // Python didn't respond, but might still work later — check binary exists
-            if (pythonBin.exists()) {
-                Log.w("LinuxEnv", "python3 binary exists but proot exec failed, marking setup as degraded")
+            val anyPython = pythonBin.exists() || python3Bin.exists()
+            if (anyPython) {
+                Log.w("LinuxEnv", "Python binary exists but proot exec failed, marking setup as degraded")
                 setupMarker.writeText("${abi}_degraded")
                 log.appendLine("  ⚠ Python 已安装但无法通过 proot 启动（fork 问题）")
 
@@ -415,15 +404,25 @@ class LinuxEnvironment(context: Context) {
         Log.d("LinuxEnv", "cmd: ${args.takeLast(4).joinToString(" ")}")
 
         val process = pb.start()
-        val output = process.inputStream.bufferedReader().readText()
-        val exited = process.waitFor(timeoutSeconds, java.util.concurrent.TimeUnit.SECONDS)
-
-        if (!exited) {
-            process.destroyForcibly()
-            return ProcessResult(false, output, -1)
+        val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
+        return try {
+            val future = executor.submit<ProcessResult> {
+                val output = process.inputStream.bufferedReader().readText()
+                val exitCode = process.waitFor()
+                ProcessResult(exitCode == 0, output, exitCode)
+            }
+            future.get(timeoutSeconds, java.util.concurrent.TimeUnit.SECONDS)
+        } catch (e: java.util.concurrent.TimeoutException) {
+            process.destroy()
+            executor.shutdownNow()
+            ProcessResult(false, "", -1)
+        } catch (e: Exception) {
+            process.destroy()
+            executor.shutdownNow()
+            ProcessResult(false, e.message ?: "unknown error", -1)
+        } finally {
+            executor.shutdownNow()
         }
-        val exitCode = process.exitValue()
-        return ProcessResult(exitCode == 0, output, exitCode)
     }
 
     data class ProcessResult(
