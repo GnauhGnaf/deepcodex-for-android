@@ -71,14 +71,43 @@ class AppContainer(context: Context) {
 
     suspend fun saveCurrentConversation() {
         val id = conversationManager.conversationId ?: return
+        val messages = conversationManager.toMessages()
+        val cleaned = sanitizeMessages(messages)
         conversationStore.saveConversation(
             PersistedConversation(
                 id = id,
                 title = conversationManager.conversationTitle.ifBlank { "新对话" },
                 createdAt = conversationManager.createdAt,
                 updatedAt = System.currentTimeMillis(),
-                messages = conversationManager.toMessages()
+                messages = cleaned
             )
         )
+    }
+
+    /** Strip assistant messages whose tool_calls lack matching tool responses. */
+    private fun sanitizeMessages(messages: List<com.example.app.data.api.models.Message>): List<com.example.app.data.api.models.Message> {
+        val result = messages.toMutableList()
+        var i = 0
+        while (i < result.size) {
+            val msg = result[i]
+            if (msg.role == "assistant" && !msg.toolCalls.isNullOrEmpty()) {
+                val expectedIds = msg.toolCalls.map { it.id }.toSet()
+                val providedIds = mutableSetOf<String>()
+                var j = i + 1
+                while (j < result.size && result[j].role == "tool") {
+                    result[j].toolCallId?.let { providedIds.add(it) }
+                    j++
+                }
+                if (!providedIds.containsAll(expectedIds)) {
+                    result[i] = msg.copy(toolCalls = null)
+                }
+            }
+            i++
+        }
+        return result
+    }
+
+    fun syncOcrConfig(key: String, baseUrl: String) {
+        linuxEnvironment.writeOcrConfig(key, baseUrl)
     }
 }

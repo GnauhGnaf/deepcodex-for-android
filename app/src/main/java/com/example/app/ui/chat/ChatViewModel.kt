@@ -8,6 +8,7 @@ import com.example.app.App
 import com.example.app.data.api.models.ToolResult
 import com.example.app.data.repository.StreamEvent
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -58,7 +59,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private var workspaceSnapshot: Set<String> = emptySet()
 
     init {
-        startNewConversation()
+        // Restore active conversation if ViewModel was recreated (rotation, process death)
+        val convId = app.container.currentConversationId
+        val history = app.container.conversationManager.history
+        if (convId != null && history.size > 1) { // >1 because system prompt is always there
+            _messages.value = rebuildUIMessages(history)
+            messageCounter = _messages.value.size.toLong()
+        } else {
+            startNewConversation()
+        }
     }
 
     fun startNewConversation() {
@@ -143,6 +152,26 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         app.container.saveCurrentConversation()
     }
 
+    // Called from outside (e.g., Activity onPause) to save without a coroutine scope
+    fun onPause() {
+        if (app.container.currentConversationId != null && _messages.value.isNotEmpty()) {
+            viewModelScope.launch(Dispatchers.IO) {
+                app.container.saveCurrentConversation()
+            }
+        }
+    }
+
+    private fun startPeriodicSave() {
+        viewModelScope.launch(Dispatchers.IO) {
+            while (_isLoading.value) {
+                delay(5_000)
+                if (_isLoading.value) {
+                    app.container.saveCurrentConversation()
+                }
+            }
+        }
+    }
+
     // Save right after user message to survive crashes during API calls
     private fun persistAfterUserMessage() {
         viewModelScope.launch(Dispatchers.IO) {
@@ -166,6 +195,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 workspaceSnapshot = withContext(Dispatchers.IO) { snapshotWorkspaceFiles() }
                 // Persist immediately after user message (before API call)
                 persistAfterUserMessage()
+                startPeriodicSave()
                 val resolved = resolveSlashCommand(text)
                 repo.sendMessage(resolved).collect { event ->
                     when {

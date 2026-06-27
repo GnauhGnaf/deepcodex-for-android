@@ -9,6 +9,7 @@ import java.util.zip.GZIPInputStream
 
 /**
  * Minimal POSIX ustar TAR extractor — no external dependencies.
+ * Supports GNU long-name, ustar prefix, and PAX extended headers.
  * Replaces Apache Commons Compress to avoid java.nio.file.LinkOption on API < 26.
  */
 object TarExtractor {
@@ -32,6 +33,7 @@ object TarExtractor {
         val symlinks = mutableListOf<Pair<File, String>>()
         val buf = ByteArray(512)
         var count = 0
+        var paxOverrides: Map<String, String>? = null
 
         while (true) {
             // Read header (512 bytes)
@@ -45,7 +47,6 @@ object TarExtractor {
 
             // Check for end-of-archive (two zero blocks)
             if (buf.all { it == 0.toByte() }) {
-                // Read next block — if also all zeros, we're done
                 read = 0
                 while (read < 512) {
                     val n = dataIn.read(buf, read, 512 - read)
@@ -64,14 +65,19 @@ object TarExtractor {
             val typeFlag = buf[156].toInt() and 0xFF
             val linkName = buf.readCString(157, 100)
 
-            // Handle GNU long name extensions
-            val actualName: String
-            val actualSize: Long
-            val actualType: Int
-            val actualLink: String
+            // Read ustar prefix field (offset 345, 155 bytes)
+            val ustarMagic = buf.readCString(257, 6)
+            val prefix = if (ustarMagic == "ustar") buf.readCString(345, 155) else ""
 
+            // Handle PAX extended header (type 'x') — stores full path for the NEXT entry
+            if (typeFlag == 'x'.code) {
+                paxOverrides = parsePax(dataIn, size.toInt())
+                skipPadding(dataIn, size)
+                continue
+            }
+
+            // Handle GNU long name (type 'L') — stores full name for the NEXT entry
             if (typeFlag == 'L'.code) {
-                // GNU long name — read name from data block
                 val nameBuf = ByteArray(size.toInt())
                 dataIn.readFully(nameBuf)
                 val longName = nameBuf.readCString(0, nameBuf.size)
@@ -79,69 +85,107 @@ object TarExtractor {
                 // Read next header (the actual entry)
                 read = dataIn.read(buf)
                 if (read < 512) break
-                actualName = longName
-                actualSize = buf.readOctal(124, 12)
-                actualType = buf[156].toInt() and 0xFF
-                actualLink = buf.readCString(157, 100)
-            } else {
-                actualName = name
-                actualSize = size
-                actualType = typeFlag
-                actualLink = linkName
+                val actualName = longName
+                val actualSize = buf.readOctal(124, 12)
+                val actualType = buf[156].toInt() and 0xFF
+                val actualLink = buf.readCString(157, 100)
+                val actualMode = buf.readOctal(100, 8)
+                extractEntry(dataIn, destDir, actualName, actualType, actualLink,
+                    actualMode, actualSize, buf, symlinks)
+                count++
+                continue
             }
 
-            val destFile = File(destDir, actualName)
+            // Build actual name: PAX path > ustar prefix > header name
+            val actualName = paxOverrides?.get("path") ?: if (prefix.isNotEmpty()) "$prefix/$name" else name
+            val actualSize = paxOverrides?.get("size")?.toLongOrNull() ?: size
+            val actualLink = paxOverrides?.get("linkpath") ?: linkName
 
-            when {
-                actualType == '5'.code || actualType == 0 && actualName.endsWith("/") -> {
-                    // Directory
-                    destFile.mkdirs()
-                }
-                actualType == '2'.code -> {
-                    // Symbolic link
-                    destFile.parentFile?.mkdirs()
-                    symlinks.add(destFile to actualLink)
-                }
-                actualType == '1'.code -> {
-                    // Hard link — treat as symlink
-                    destFile.parentFile?.mkdirs()
-                    symlinks.add(destFile to actualLink)
-                }
-                else -> {
-                    // Regular file (type '0' or '\0')
-                    destFile.parentFile?.mkdirs()
-                    val remaining = actualSize
-                    FileOutputStream(destFile).use { out ->
-                        var left = remaining
-                        while (left > 0) {
-                            val toRead = minOf(left, buf.size.toLong()).toInt()
-                            dataIn.readFully(buf, 0, toRead)
-                            out.write(buf, 0, toRead)
-                            left -= toRead
-                        }
-                    }
+            extractEntry(dataIn, destDir, actualName, typeFlag, actualLink,
+                mode, actualSize, buf, symlinks)
 
-                    // Restore execute bits for binaries/libs
-                    if (mode.toInt() and 0b001_001_001 != 0
-                        || actualName.contains("/bin/") || actualName.contains("/sbin/")
-                        || actualName.endsWith(".so") || actualName.contains(".so.")
-                        || actualName == "bin/busybox" || actualName.startsWith("bin/")
-                        || actualName.startsWith("sbin/") || actualName.startsWith("lib/")
-                    ) {
-                        destFile.setExecutable(true)
-                    }
-                }
-            }
-
-            // Skip padding after file data
-            if (actualType != 'L'.code) {
-                skipPadding(dataIn, actualSize)
-            }
-
+            paxOverrides = null
             count++
         }
 
         return Pair(count, symlinks)
+    }
+
+    private fun extractEntry(
+        dataIn: DataInputStream,
+        destDir: File,
+        name: String,
+        typeFlag: Int,
+        linkName: String,
+        mode: Long,
+        size: Long,
+        buf: ByteArray,
+        symlinks: MutableList<Pair<File, String>>
+    ) {
+        val destFile = File(destDir, name)
+
+        when {
+            typeFlag == '5'.code || typeFlag == 0 && name.endsWith("/") -> {
+                destFile.mkdirs()
+            }
+            typeFlag == '2'.code -> {
+                destFile.parentFile?.mkdirs()
+                symlinks.add(destFile to linkName)
+            }
+            typeFlag == '1'.code -> {
+                destFile.parentFile?.mkdirs()
+                symlinks.add(destFile to linkName)
+            }
+            else -> {
+                destFile.parentFile?.mkdirs()
+                FileOutputStream(destFile).use { out ->
+                    var left = size
+                    while (left > 0) {
+                        val toRead = minOf(left, buf.size.toLong()).toInt()
+                        dataIn.readFully(buf, 0, toRead)
+                        out.write(buf, 0, toRead)
+                        left -= toRead
+                    }
+                }
+
+                if (mode.toInt() and 0b111_111_111 != 0
+                    || name.contains("/bin/") || name.contains("/sbin/")
+                    || name.endsWith(".so") || name.contains(".so.")
+                    || name == "bin/busybox" || name.startsWith("bin/")
+                    || name.startsWith("sbin/") || name.startsWith("lib/")
+                    || name.contains("/lib/") || name.contains("/libexec/")
+                ) {
+                    destFile.setExecutable(true)
+                }
+            }
+        }
+
+        // Skip padding after file data (only for types that have data: file, not dir/symlink)
+        if (typeFlag != '5'.code && typeFlag != '2'.code && typeFlag != '1'.code) {
+            skipPadding(dataIn, size)
+        }
+    }
+
+    /** Parse PAX extended header data: "len key=value\n" records. */
+    private fun parsePax(dataIn: DataInputStream, dataSize: Int): Map<String, String> {
+        val paxData = ByteArray(dataSize)
+        dataIn.readFully(paxData)
+        val text = paxData.toString(Charsets.UTF_8)
+        val map = mutableMapOf<String, String>()
+        var pos = 0
+        while (pos < text.length) {
+            val space = text.indexOf(' ', pos)
+            if (space < 0) break
+            val recLen = text.substring(pos, space).toIntOrNull() ?: break
+            if (recLen <= 0 || pos + recLen > text.length) break
+            val record = text.substring(space + 1, pos + recLen - 1) // -1 for trailing \n
+            val eq = record.indexOf('=')
+            if (eq > 0) {
+                map[record.substring(0, eq)] = record.substring(eq + 1)
+            }
+            pos += recLen
+        }
+        return map
     }
 
     private fun skipPadding(input: DataInputStream, size: Long) {

@@ -1,5 +1,6 @@
 package com.example.app.data.api
 
+import android.util.Log
 import com.example.app.data.api.models.ChatRequest
 import com.example.app.data.api.models.ChatResponse
 import com.example.app.util.SseParser
@@ -46,6 +47,8 @@ class DeepSeekClient {
             override fun onResponse(call: Call, response: Response) {
                 if (!response.isSuccessful) {
                     val body = response.body?.string()
+                    Log.e("DeepSeekClient", "HTTP ${response.code}: $body")
+                    Log.e("DeepSeekClient", "Request model: ${request.model}, messages: ${request.messages.size}, tokens~${request.messages.sumOf { (it.content?.length ?: 0) / 3 + 4 }}")
                     response.close()
                     close(IOException("HTTP ${response.code}: $body"))
                     return

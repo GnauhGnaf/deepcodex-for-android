@@ -1,5 +1,6 @@
 package com.example.app.data.repository
 
+import android.util.Log
 import com.example.app.data.api.DeepSeekClient
 import com.example.app.data.api.models.*
 import com.example.app.domain.LinuxEnvironment
@@ -31,60 +32,41 @@ class ChatRepository(
 ) {
     companion object {
         val SYSTEM_PROMPT = """
-You are a coding agent running on Android, powered by Codeeps. You are precise, safe, and helpful.
+You are a coding agent running inside Alpine Linux (proot) on Android via Codeeps. Respond in Chinese (简体中文). Be concise and proactive.
 
-# Language
-Always respond in Chinese (简体中文). All explanations, descriptions, and chat messages must be in Chinese. Code and technical identifiers remain in English.
+# Environment
+Workspace: `/workspace`. Shell: `/bin/sh` (BusyBox ash). All packages pre-installed — never run `pip install` or `apk add`.
+Pre-installed: Python 3 (rich, requests, click, Pillow, python-pptx, python-docx, lxml, markitdown, deepseek-ocr, defusedxml), curl, pandoc, pdftotext, WenQuanYi Zen Hei font.
 
-# Programming Environment
-You are working inside an Alpine Linux (proot) environment on Android. The workspace directory `/workspace` maps to the app's workspace. The shell is `/bin/sh` (BusyBox ash with full scripting support).
+# File paths
+Tool paths are relative to workspace root — no `/workspace/` prefix.
+  ✓ "fibonacci.py"  ✗ "/workspace/fibonacci.py"
 
-Available runtimes:
-- **Shell scripts**: Write .sh files and run with `run_command`. Full sh scripting.
-- **Python 3**: Pre-installed. Write .py files and run with `run_command python3 script.py`.
-- **pip install**: Run `run_command pip install <package>`. The system is pre-configured with Tsinghua mirror and allows system-wide installs. If `pip install <pkg>` fails, try `pip install <pkg> --break-system-packages` as fallback. NO virtual environments needed.
-- **C/C++**: Install build tools if needed with `apk add build-base`.
-- **Any Alpine package**: `apk add <pkg>` via `run_command`.
+# Skills (use directly — do not read SKILL.md)
 
-Think like a programmer: write code to files, then execute them. Combine tools to build, test, and debug. You have a real Linux environment — use it.
+| Skill | Purpose | Quick Command |
+|-------|---------|---------------|
+| ocr-image | Extract text from images/PDFs | `python3 /skills/ocr-image/scripts/ocr.py <file> -m grounding` |
+| docx | Create/edit Word documents | `python3 /skills/docx/scripts/office/unpack.py <file> <dir>` |
+| pptx | Create/edit PowerPoint presentations | `python -m markitdown <file>` (read) |
+| drawio | Diagrams, flowcharts, architecture | Write .drawio XML file |
+| markdown2docx | Convert Markdown to Word via template | Run conversion script per SKILL.md |
+| guizang-ppt-skill | Web-based horizontal swipe PPT (HTML) | Generate single HTML with WebGL |
+| image-svg-pptx-pro | Screenshot/image → editable PPT via SVG | Reconstruct PPT with SVG/PNG fallback |
+| humanizer | Remove AI writing traces from text | Edit text to sound more natural |
+| firecrawl-research-papers | Search & synthesize research papers | Semantic paper search |
+| frontend-design | Frontend UI design patterns | Apply design patterns from SKILL.md |
+| web-design-guidelines | Web design best practices | Follow guidelines from SKILL.md |
+| python-dev | Python development in Alpine Linux | Follow conventions from SKILL.md |
+| shell-scripting | Shell scripting (BusyBox ash) | Follow ash/POSIX conventions |
+| project-init | Initialize project structures | Follow templates from SKILL.md |
+| skill-creator | Create custom agent skills | Follow SKILL.md instructions |
+| find-skills | Discover/install community skills | Search skills.sh registry |
 
-# How you work
-You communicate efficiently, always keeping the user informed. Be concise and direct. When solving problems:
-1. Explore the project structure with list_files or search_files
-2. Read relevant files
-3. Write code changes with write_file
-4. Execute and verify with run_command
-
-# File path rules (CRITICAL)
-ALL file tools (read_file, write_file, list_files) use relative paths. The workspace root is already set for you. Do NOT prefix paths with /workspace/ — just use the filename or relative path directly.
-  ✓ Correct: "fibonacci.py", "src/main.py"
-  ✗ Wrong:   "/workspace/fibonacci.py", "/workspace/src/main.py"
-run_command executes inside /workspace (proot Linux), so shell commands see files at /workspace/fibonacci.py. This is the only tool where you use /workspace paths when running commands.
-
-# Skills
-You have access to **skills** — curated guides for common tasks. Skills are stored as directories under `.codex/skills/`, each containing a `SKILL.md` file plus optional scripts and references.
-- List available skills: use `list_files` on `.codex/skills` — each directory is a skill
-- Read a skill: use `read_file` on `.codex/skills/<skill-name>/SKILL.md`
-- Skill scripts: Python/Shell scripts inside skill directories can be run via `run_command`. Example: `run_command python3 /skills/ocr-image/scripts/ocr.py image.jpg`
-- Install new skills: use `run_command sh /skills/skills.sh list` to browse, then `run_command sh /skills/skills.sh install <name>` to install from skills.sh registry
-- Create a new skill: use `write_file` to create `.codex/skills/<skill-name>/SKILL.md`
-- When starting a task, check if any relevant skill exists and read it first
-- Skills provide environment-specific best practices and templates
-- If no skill matches the task, proceed normally with your own expertise
-
-# Tools at your disposal
-- read_file: Read a file in the workspace. path is relative (e.g. "fibonacci.py"), do NOT add /workspace
-- write_file: Write a file in the workspace. path is relative, do NOT add /workspace
-- list_files: List directory contents in the workspace. path is relative, do NOT add /workspace
-- search_files: Find files matching a glob pattern (e.g., **/*.kt)
-- run_command: Execute a shell command inside the /workspace directory in proot Linux
+For skill details: `read_file /skills/<name>/SKILL.md`
 
 # Style
-- Use tools to gather information before answering
-- Write complete, runnable code files rather than snippets
-- Explain your actions briefly before using tools
-- Report results clearly after tool execution
-- Be proactive: if you can solve it with tools, do it without asking
+Write code → execute → report. No long explanations. Solve without asking.
 """.trimIndent()
     }
 
@@ -181,6 +163,7 @@ You have access to **skills** — curated guides for common tasks. Skills are st
                     break
                 } catch (e: Exception) {
                     lastError = e
+                    Log.e("ChatRepo", "Stream error attempt $attempt: ${e.message}", e)
                     if (attempt < 3) {
                         val backoff = (attempt * 1000).coerceAtMost(3000).toLong()
                         delay(backoff)
@@ -238,12 +221,40 @@ You have access to **skills** — curated guides for common tasks. Skills are st
     }
 
     private fun buildRequest(model: String): ChatRequest {
+        val messages = sanitizeMessages(conversationManager.history)
         return ChatRequest(
             model = model,
-            messages = conversationManager.history,
+            messages = messages,
             tools = ToolDefinitions.allTools,
             toolChoice = "auto"
         )
+    }
+
+    /**
+     * Ensure every assistant message with tool_calls is followed by matching tool messages.
+     * If not, strip the orphaned tool_calls to avoid HTTP 400 from the API.
+     */
+    private fun sanitizeMessages(messages: List<Message>): List<Message> {
+        val result = messages.toMutableList()
+        var i = 0
+        while (i < result.size) {
+            val msg = result[i]
+            if (msg.role == "assistant" && !msg.toolCalls.isNullOrEmpty()) {
+                val expectedIds = msg.toolCalls.map { it.id }.toSet()
+                val providedIds = mutableSetOf<String>()
+                var j = i + 1
+                while (j < result.size && result[j].role == "tool") {
+                    result[j].toolCallId?.let { providedIds.add(it) }
+                    j++
+                }
+                if (!providedIds.containsAll(expectedIds)) {
+                    Log.w("ChatRepo", "Stripping orphaned tool_calls at index $i: expected=$expectedIds, got=$providedIds")
+                    result[i] = msg.copy(toolCalls = null)
+                }
+            }
+            i++
+        }
+        return result
     }
 
     fun clearHistory() {

@@ -45,7 +45,7 @@ class DocumentService(
             execInLinux("rm -rf $outputDir && mkdir -p $outputDir", workspaceDir, 5)
             execInLinux("mkdir -p /tmp/lo_profile", workspaceDir, 3)
 
-            val cmd = "exec soffice.bin -env:UserInstallation=file:///tmp/lo_profile --headless --convert-to pdf --outdir $outputDir \"$prootFilePath\" 2>&1"
+            val cmd = "SAL_USE_VCLPLUGIN=svp /usr/lib/libreoffice/program/soffice.bin -env:UserInstallation=file:///tmp/lo_profile --headless --convert-to pdf --outdir $outputDir \"$prootFilePath\" 2>&1"
             Log.d(TAG, "Running: $cmd")
 
             val result = execInLinux(cmd, workspaceDir, 120)

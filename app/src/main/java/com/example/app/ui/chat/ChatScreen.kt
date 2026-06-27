@@ -18,6 +18,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.app.App
 import com.example.app.ui.chat.components.ChatInputBar
@@ -37,6 +40,18 @@ fun ChatScreen(
 
     var showFileBrowser by remember { mutableStateOf(false) }
     val app = LocalContext.current.applicationContext as App
+
+    // Auto-save on lifecycle pause (app exit, rotation, etc.)
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_PAUSE) {
+                viewModel.onPause()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     // Handle pending conversation actions from HistoryScreen
     val actionVersion by app.container.pendingActionVersion

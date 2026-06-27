@@ -32,11 +32,30 @@ class LinuxEnvironment(context: Context) {
     val isReady: Boolean get() = setupMarker.exists() && (File(rootfsDir, "usr/bin/python3.14").exists() || File(rootfsDir, "usr/bin/python3").exists())
     val isLibreOfficeReady: Boolean get() = libreofficeMarker.exists()
 
+    fun writeOcrConfig(apiKey: String, baseUrl: String) {
+        val ocrConfigFile = File(rootfsDir, "root/.ocr_config")
+        ocrConfigFile.parentFile?.mkdirs()
+        ocrConfigFile.writeText("DS_OCR_API_KEY=$apiKey\nDS_OCR_BASE_URL=$baseUrl\n")
+    }
+
     suspend fun setup(): Result<String> = setupMutex.withLock {
         withContext(Dispatchers.IO) {
         try {
             // Always ensure fake /proc exists (for upgrades from older versions)
             createFakeProc()
+
+            // Fix LO permissions (always, in case TarExtractor missed them)
+            val loProgramDir = File(rootfsDir, "usr/lib/libreoffice/program")
+            if (loProgramDir.exists()) {
+                loProgramDir.listFiles()?.forEach { f ->
+                    if (!f.isDirectory) f.setExecutable(true)
+                }
+            }
+
+            // Ensure Noto CJK fonts are installed (even if fonts.done exists)
+            if (!File(rootfsDir, "usr/share/fonts/noto-cjk").exists()) {
+                fontsMarker.delete()
+            }
 
             // Fast path: everything is ready
             if (isReady && pipMarker.exists() && libreofficeMarker.exists() && fontsMarker.exists()) {
@@ -66,8 +85,8 @@ class LinuxEnvironment(context: Context) {
             val log = StringBuilder()
             val abi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: "x86_64"
 
-            // --- Step 1: Prepare directories & verify proot ---
-            log.appendLine("[1/7] 准备环境...")
+            // [1/5] Prepare environment
+            log.appendLine("[1/5] 准备环境...")
             tmpDir.mkdirs(); envDir.mkdirs(); rootfsDir.mkdirs()
             createFakeProc()
             Log.d("LinuxEnv", "ABI=$abi, proot=${prootBin.absolutePath}")
@@ -81,15 +100,13 @@ class LinuxEnvironment(context: Context) {
             prootLoader.inputStream().use { src -> FileOutputStream(rootfsLoader).use { dst -> src.copyTo(dst) } }
             rootfsLoader.setExecutable(true)
 
-            // --- Step 2: Extract rootfs ---
-            log.appendLine("[2/7] 解压 Alpine Linux 根文件系统...")
-            val rootfsAsset = "rootfs/alpine-minirootfs-${
-                when { abi.contains("arm64") || abi.contains("aarch64") -> "aarch64"; else -> "x86_64" }
-            }.tar"
+            // [2/5] Extract rootfs (all system deps pre-installed)
+            log.appendLine("[2/5] 解压 Alpine Linux（预装全部系统依赖）...")
+            val arch = when { abi.contains("arm64") || abi.contains("aarch64") -> "aarch64"; else -> "x86_64" }
+            val rootfsAsset = "rootfs/alpine-minirootfs-$arch.tar"
             Log.d("LinuxEnv", "Extracting $rootfsAsset")
 
             val symlinks = mutableListOf<Pair<File, String>>()
-
             try {
                 appContext.assets.open(rootfsAsset).use { assetStream ->
                     val (count, links) = com.example.app.util.TarExtractor.extract(assetStream, rootfsDir)
@@ -101,21 +118,17 @@ class LinuxEnvironment(context: Context) {
                 return@withContext Result.failure(RuntimeException("rootfs 解压失败: ${e.message}"))
             }
 
-            // Verify key files exist after extraction
             val pythonBin = File(rootfsDir, "usr/bin/python3.14")
             val python3Bin = File(rootfsDir, "usr/bin/python3")
             val busyboxBin = File(rootfsDir, "bin/busybox")
-            val shLink = File(rootfsDir, "bin/sh")
-            Log.d("LinuxEnv", "After extract: python3.14=${pythonBin.exists()}, python3=${python3Bin.exists()}, busybox=${busyboxBin.exists()}, sh=${shLink.exists()}")
-
-            val hasPython = pythonBin.exists() || python3Bin.exists()
+            Log.d("LinuxEnv", "After extract: python3.14=${pythonBin.exists()}, python3=${python3Bin.exists()}, busybox=${busyboxBin.exists()}")
 
             if (!busyboxBin.exists()) {
                 return@withContext Result.failure(RuntimeException("busybox 未在 rootfs 中找到"))
             }
 
-            // --- Step 3: Create symlinks (must happen before apk installs) ---
-            log.appendLine("[3/7] 创建符号链接...")
+            // [3/5] Create symlinks
+            log.appendLine("[3/5] 创建符号链接...")
             var linksOk = 0; var linksFail = 0
             for ((destFile, target) in symlinks) {
                 try {
@@ -126,7 +139,6 @@ class LinuxEnvironment(context: Context) {
                     else linksOk++
                 }
             }
-            Log.d("LinuxEnv", "Tar symlinks: $linksOk ok, $linksFail fail")
 
             val symlinksListFile = File(rootfsDir, "symlinks.list")
             var extraLinks = 0
@@ -149,62 +161,37 @@ class LinuxEnvironment(context: Context) {
                     }
                 }
                 symlinksListFile.delete()
-            } else {
-                Log.w("LinuxEnv", "symlinks.list not found in rootfs!")
             }
-            Log.d("LinuxEnv", "Extra symlinks: $extraLinks")
             log.appendLine("  ✓ ${linksOk + extraLinks} 个符号链接")
 
+            // [4/5] Configure system (mirrors, pip, fonts — all packages pre-installed)
+            log.appendLine("[4/5] 配置系统...")
             File(rootfsDir, "etc/resolv.conf").writeText("nameserver 8.8.8.8\nnameserver 8.8.4.4\n")
             File(rootfsDir, "workspace").mkdirs()
 
-            // --- Step 4: Install Python if not pre-installed ---
-            if (!hasPython) {
-                log.appendLine("[4/7] 安装 Python...")
-                val installPy = execRaw("apk add --no-cache python3 2>&1", 300)
-                Log.d("LinuxEnv", "apk add python3: exit=${installPy.exitCode}, out=${installPy.output.take(300)}")
-                if (!installPy.success && !python3Bin.exists() && !pythonBin.exists()) {
-                    return@withContext Result.failure(RuntimeException("Python 安装失败: ${installPy.output.take(200)}"))
-                }
-                log.appendLine("  ✓ Python 已安装")
-            } else {
-                log.appendLine("[4/7] Python 已预装")
-            }
+            val mirrorUrl = "https://mirrors.tuna.tsinghua.edu.cn/alpine/v3.24"
+            execRaw(
+                "echo '$mirrorUrl/main' > /etc/apk/repositories && " +
+                "echo '$mirrorUrl/community' >> /etc/apk/repositories 2>&1", 5
+            )
 
-            // --- Step 5: Smoke test proot ---
-            log.appendLine("[5/7] 测试 proot...")
+            configurePip()
+            pipMarker.writeText("ok")
+            log.appendLine("  ✓ pip 及 Python 包已配置")
+
+            configureFonts()
+            fontsMarker.writeText("ok")
+            log.appendLine("  ✓ 中文字体已就绪")
+
+            // [5/5] Verify environment
+            log.appendLine("[5/5] 验证环境...")
             val rEcho = execRaw("echo proot_ok", 5)
-            Log.d("LinuxEnv", "echo test: exit=${rEcho.exitCode} out=${rEcho.output}")
             if (!rEcho.success) {
                 return@withContext Result.failure(RuntimeException("proot 基础功能异常: ${rEcho.output}"))
             }
             log.appendLine("  ✓ proot 基础功能正常")
 
-            // Test a command that requires fork (ls)
-            var forkOk = false
-            for (attempt in 1..3) {
-                val rLs = execRaw("ls /usr/bin/python* 2>&1", 8)
-                Log.d("LinuxEnv", "ls test attempt $attempt: exit=${rLs.exitCode} out=${rLs.output}")
-                if (rLs.success) { forkOk = true; break }
-            }
-            if (!forkOk) {
-                Log.e("LinuxEnv", "fork still failing after retries, will try python3 directly")
-            }
-
-            // --- Step 6: Configure pip ---
-            log.appendLine("[6/7] 配置 pip...")
-            configurePip()
-            pipMarker.writeText("ok")
-            log.appendLine("  ✓ pip 已配置")
-
-            // Step 7: Configure fonts + Test Python
-            log.appendLine("[7/7] 安装中文字体...")
-            configureFonts()
-            fontsMarker.writeText("ok")
-            log.appendLine("  ✓ 中文字体已安装")
-
             val pyCmd = if (pythonBin.exists()) "python3.14" else "python3"
-
             for (attempt in 1..3) {
                 val rPy = execRaw("$pyCmd --version 2>&1", 10)
                 Log.d("LinuxEnv", "$pyCmd test $attempt: exit=${rPy.exitCode} out=${rPy.output}")
@@ -212,7 +199,6 @@ class LinuxEnvironment(context: Context) {
                     log.appendLine("  ✓ ${rPy.output.trim()}")
                     setupMarker.writeText(abi)
 
-                    // LibreOffice is pre-installed in the rootfs
                     if (File(rootfsDir, "usr/lib/libreoffice/program/soffice").exists()) {
                         libreofficeMarker.writeText("ok")
                         log.appendLine("  ✓ LibreOffice 已就绪（预装）")
@@ -221,24 +207,18 @@ class LinuxEnvironment(context: Context) {
                     log.appendLine("初始化完成！")
                     return@withContext Result.success(log.toString())
                 }
-                if (attempt < 3) {
-                    Log.d("LinuxEnv", "$pyCmd retry in 1s...")
-                    kotlinx.coroutines.delay(1000)
-                }
+                if (attempt < 3) kotlinx.coroutines.delay(1000)
             }
 
-            // Python didn't respond, but might still work later — check binary exists
+            // Python binary exists but proot exec failed — degraded mode
             val anyPython = pythonBin.exists() || python3Bin.exists()
             if (anyPython) {
                 Log.w("LinuxEnv", "Python binary exists but proot exec failed, marking setup as degraded")
                 setupMarker.writeText("${abi}_degraded")
                 log.appendLine("  ⚠ Python 已安装但无法通过 proot 启动（fork 问题）")
-
-                // LibreOffice is pre-installed
                 if (!libreofficeMarker.exists() && File(rootfsDir, "usr/lib/libreoffice/program/soffice").exists()) {
                     libreofficeMarker.writeText("ok")
                 }
-
                 log.appendLine("初始化完成（降级模式）")
                 return@withContext Result.success(log.toString())
             }
@@ -266,64 +246,135 @@ class LinuxEnvironment(context: Context) {
     }
 
     private fun configurePip() {
-        // Remove EXTERNALLY-MANAGED files that block pip install
+        // All Python packages are pre-installed in rootfs (apk + .whl extraction).
+        // Just clean up EXTERNALLY-MANAGED markers and ensure pip.conf exists.
         execRaw("find /usr/lib/python3* -name EXTERNALLY-MANAGED -delete 2>/dev/null || true", 10)
-
-        // Write pip.conf — use mkdir + echo (heredoc unreliable through proot args)
-        execRaw("mkdir -p /root/.config/pip", 3)
-        execRaw("echo '[global]' > /root/.config/pip/pip.conf", 3)
-        execRaw("echo 'break-system-packages = true' >> /root/.config/pip/pip.conf", 3)
-        execRaw("echo 'index-url = https://pypi.tuna.tsinghua.edu.cn/simple' >> /root/.config/pip/pip.conf", 3)
-        execRaw("echo 'trusted-host = pypi.tuna.tsinghua.edu.cn' >> /root/.config/pip/pip.conf", 3)
-        execRaw("chmod 644 /root/.config/pip/pip.conf", 3)
-
-        // Verify, fallback to pip config set if needed
-        val pipCfg = execRaw("cat /root/.config/pip/pip.conf 2>&1", 5)
-        Log.d("LinuxEnv", "pip.conf: ${pipCfg.output}")
-        if (!pipCfg.success || !pipCfg.output.contains("break-system-packages")) {
-            Log.w("LinuxEnv", "pip.conf echo write failed, trying pip config set")
-            execRaw("pip config set global.break-system-packages true 2>&1 || true", 15)
-            execRaw("pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple 2>&1 || true", 15)
-        }
+        execRaw("mkdir -p /root/.config/pip 2>/dev/null; " +
+                "echo -e '[global]\\nbreak-system-packages = true\\n" +
+                "index-url = https://pypi.tuna.tsinghua.edu.cn/simple\\n" +
+                "trusted-host = pypi.tuna.tsinghua.edu.cn' > /root/.config/pip/pip.conf", 3)
     }
 
     private fun configureFonts() {
-        execRaw("apk add --no-cache font-wqy-zenhei 2>&1", 120)
+        // Install Noto CJK fonts for full Chinese font support (宋体/微软雅黑/黑体/楷体 etc.)
+        if (!File(rootfsDir, "usr/share/fonts/noto-cjk").exists()) {
+            execRaw("apk update 2>&1 && apk add font-noto-cjk font-noto-cjk-extra 2>&1 || true", 300)
+        }
+        // Activate wqy-zenhei fontconfig
+        val confAvail = File(rootfsDir, "etc/fonts/conf.avail")
+        val confD = File(rootfsDir, "etc/fonts/conf.d")
+        if (confAvail.exists()) {
+            confAvail.listFiles()?.filter { it.name.contains("wqy") || it.name.contains("noto") }?.forEach { src ->
+                val dest = File(confD, src.name)
+                if (!dest.exists()) {
+                    dest.writeText(src.readText())
+                }
+            }
+        }
+        // Rebuild font cache
         execRaw("fc-cache -fv 2>&1 || true", 10)
     }
 
     // Must be called from within Dispatchers.IO context
-    private fun installLibreOfficeInternal(): Boolean {
-        try {
-            // Update repo first
-            Log.d("LinuxEnv", "Running apk update for LibreOffice...")
-            val update = execRaw("apk update 2>&1", 120)
-            Log.d("LinuxEnv", "apk update: ${update.output.take(300)}")
+    private fun installLibreOfficeInternal(onProgress: (String) -> Unit): Boolean {
+        // First check if already pre-installed in rootfs
+        if (File(rootfsDir, "usr/lib/libreoffice/program/soffice").exists()) {
+            onProgress("LibreOffice 已预装于 rootfs")
+            return true
+        }
 
-            if (!update.success && !update.output.contains("OK")) {
-                Log.w("LinuxEnv", "apk update had issues, trying install anyway...")
+        // Not pre-installed — install via apk (needs network, ~500MB, 2-5 min)
+        onProgress("正在更新软件源...")
+        for (attempt in 1..3) {
+            if (attempt > 1) Thread.sleep(5000)
+
+            val mirrorUrl = "https://mirrors.tuna.tsinghua.edu.cn/alpine/v3.24"
+            execRaw(
+                "echo '$mirrorUrl/main' > /etc/apk/repositories && " +
+                "echo '$mirrorUrl/community' >> /etc/apk/repositories 2>&1", 10
+            )
+
+            // Step 1: Update index
+            onProgress("正在更新软件包索引...")
+            execRaw("apk update 2>&1", 30)
+
+            // Step 2: Fetch packages (downloads with progress lines, ~500MB)
+            onProgress("正在下载 LibreOffice 软件包...")
+            var pkgCount = 0
+            var totalPkgs = 0
+            val fetchResult = execRawStreaming(
+                "rm -rf /tmp/lo_dl 2>/dev/null; mkdir -p /tmp/lo_dl; " +
+                "apk fetch --no-cache libreoffice -o /tmp/lo_dl 2>&1",
+                600,
+                onLine = { line ->
+                    val trimmed = line.trim()
+                    when {
+                        trimmed.startsWith("Downloading") -> {
+                            pkgCount++
+                            val filename = trimmed.removePrefix("Downloading ")
+                            // Extract size from apk fetch output if available
+                            onProgress("下载 ($pkgCount): $filename")
+                        }
+                        !trimmed.startsWith("WARNING") && !trimmed.startsWith("fetch") &&
+                        trimmed.isNotBlank() -> {
+                            // Parse apk fetch summary like "Downloaded 173 packages"
+                            if (trimmed.contains("Downloaded") || trimmed.contains("packages")) {
+                                onProgress(trimmed)
+                            }
+                        }
+                    }
+                }
+            )
+
+            if (!fetchResult.success) {
+                Log.e("LinuxEnv", "apk fetch failed: ${fetchResult.output.take(500)}")
+                onProgress("下载失败，正在重试...")
+                continue
             }
 
-            // Install libreoffice
-            Log.d("LinuxEnv", "Running apk add libreoffice...")
-            val install = execRaw("apk add --no-cache libreoffice 2>&1", 600)
-            Log.d("LinuxEnv", "apk add libreoffice: exit=${install.exitCode}, out=${install.output.take(300)}")
+            // Count downloaded files and total size
+            val dlFiles = File(rootfsDir, "tmp/lo_dl").listFiles()?.filter { it.extension == "apk" } ?: emptyList()
+            val totalSize = dlFiles.sumOf { it.length() }
+            onProgress("下载完成: ${dlFiles.size} 个包, ${totalSize / (1024*1024)} MB")
 
-            if (install.success) return true
+            // Step 3: Install from local files (fast, no network)
+            onProgress("正在安装 LibreOffice (${dlFiles.size} 个软件包)...")
+            var installedCount = 0
+            val installResult = execRawStreaming(
+                "rm -f /var/lib/apk/lock 2>/dev/null; apk add --no-cache /tmp/lo_dl/*.apk 2>&1",
+                300,
+                onLine = { line ->
+                    val trimmed = line.trim()
+                    when {
+                        trimmed.startsWith("(") && "/" in trimmed -> {
+                            installedCount++
+                            if (installedCount % 10 == 0 || installedCount <= 3 || installedCount >= dlFiles.size - 2) {
+                                onProgress("安装: ${installedCount}/${dlFiles.size} $trimmed")
+                            }
+                        }
+                        trimmed.contains("OK:") -> onProgress(trimmed)
+                    }
+                }
+            )
 
-            // Check if binary exists even if apk reported failure
+            Log.d("LinuxEnv", "apk add libreoffice: exit=${installResult.exitCode}")
+
+            if (installResult.success) return true
+
+            // Check if binary exists even if reported failure
             val check = execRaw("which libreoffice 2>&1 || echo NOT_FOUND", 5)
-            return check.success && check.output.contains("libreoffice") && !check.output.contains("NOT_FOUND")
-        } catch (e: Exception) {
-            Log.e("LinuxEnv", "LibreOffice install failed", e)
-            return false
+            if (check.success && check.output.contains("libreoffice") && !check.output.contains("NOT_FOUND")) return true
+
+            // Cleanup for retry
+            execRaw("rm -rf /tmp/lo_dl 2>/dev/null", 5)
         }
+        return false
     }
 
-    /**
-     * Public method to install LibreOffice after initial setup.
-     * For users who already have the Linux environment set up.
-     */
+    fun isLibreOfficeAvailable(): Boolean {
+        return File(rootfsDir, "usr/lib/libreoffice/program/soffice").exists()
+    }
+
     suspend fun installLibreOffice(workspaceDir: File, onProgress: (String) -> Unit): Result<String> =
         setupMutex.withLock {
             withContext(Dispatchers.IO) {
@@ -335,9 +386,8 @@ class LinuxEnvironment(context: Context) {
                         return@withContext Result.failure(RuntimeException("Linux 环境未就绪"))
                     }
 
-                    onProgress("正在更新软件源...")
-                    val result = installLibreOfficeInternal()
-                    if (result) {
+                    val ok = installLibreOfficeInternal(onProgress)
+                    if (ok) {
                         libreofficeMarker.writeText("ok")
                         onProgress("LibreOffice 安装完成")
                         Result.success("LibreOffice 安装完成")
@@ -350,6 +400,27 @@ class LinuxEnvironment(context: Context) {
                 }
             }
         }
+
+    /**
+     * Install all skill dependencies (system + Python packages) in one shot.
+     * Returns a list of progress messages emitted during installation.
+     */
+    fun installSkillDependencies(onProgress: (String) -> Unit): Result<String> {
+        if (!isReady) {
+            return Result.failure(RuntimeException("Linux 环境未就绪，请先完成初始化"))
+        }
+        // All packages are pre-installed in rootfs — no network needed.
+        onProgress("系统软件包: 预装于 rootfs")
+        onProgress("  ✓ curl, pandoc, poppler-utils, font-wqy-zenhei")
+        onProgress("Python 包: 预装于 rootfs")
+        onProgress("  ✓ rich, requests, click, Pillow, lxml, defusedxml")
+        onProgress("  ✓ python-pptx, python-docx, markitdown, deepseek-ocr")
+
+        pipMarker.writeText("ok")
+        File(envDir, "skills_deps.done").writeText("ok")
+        onProgress("技能依赖就绪")
+        return Result.success("所有依赖已预装")
+    }
 
     suspend fun execCommand(
         command: String,
@@ -387,6 +458,29 @@ class LinuxEnvironment(context: Context) {
         return runProotProcess(args, timeoutSeconds)
     }
 
+    // Streaming variant that reports each output line as it arrives
+    private fun execRawStreaming(
+        cmd: String,
+        timeoutSeconds: Long,
+        bindMounts: List<Pair<String, String>> = emptyList(),
+        onLine: (String) -> Unit
+    ): ProcessResult {
+        val args = mutableListOf(
+            prootBin.absolutePath,
+            "-r", rootfsDir.absolutePath,
+            "-b", "/dev",
+            "-b", fakeprocDir.absolutePath + ":/proc",
+            "-b", "/sys"
+        )
+        for ((host, guest) in bindMounts) {
+            args.add("-b")
+            args.add("$host:$guest")
+        }
+        val fullCmd = "export LD_LIBRARY_PATH=/usr/lib/libreoffice/program:\${LD_LIBRARY_PATH:-}; $cmd"
+        args.addAll(listOf("-w", "/workspace", "/bin/sh", "-c", fullCmd))
+        return runProotProcessStreaming(args, timeoutSeconds, onLine)
+    }
+
     private fun runProotProcess(
         args: List<String>,
         timeoutSeconds: Long
@@ -410,6 +504,53 @@ class LinuxEnvironment(context: Context) {
                 val output = process.inputStream.bufferedReader().readText()
                 val exitCode = process.waitFor()
                 ProcessResult(exitCode == 0, output, exitCode)
+            }
+            future.get(timeoutSeconds, java.util.concurrent.TimeUnit.SECONDS)
+        } catch (e: java.util.concurrent.TimeoutException) {
+            process.destroy()
+            executor.shutdownNow()
+            ProcessResult(false, "", -1)
+        } catch (e: Exception) {
+            process.destroy()
+            executor.shutdownNow()
+            ProcessResult(false, e.message ?: "unknown error", -1)
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun runProotProcessStreaming(
+        args: List<String>,
+        timeoutSeconds: Long,
+        onLine: (String) -> Unit
+    ): ProcessResult {
+        val pb = ProcessBuilder(args)
+        pb.directory(rootfsDir)
+        val env = pb.environment()
+        env["PROOT_TMP_DIR"] = tmpDir.absolutePath
+        env["PROOT_LOADER"] = prootLoader.absolutePath
+        env["LD_LIBRARY_PATH"] = appContext.applicationInfo.nativeLibraryDir
+        env["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/lib/libreoffice/program"
+        env["HOME"] = "/root"
+        pb.redirectErrorStream(true)
+
+        Log.d("LinuxEnv", "cmd (streaming): ${args.takeLast(4).joinToString(" ")}")
+
+        val process = pb.start()
+        val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
+        return try {
+            val future = executor.submit<ProcessResult> {
+                val reader = process.inputStream.bufferedReader()
+                val output = StringBuilder()
+                var line: String? = reader.readLine()
+                while (line != null) {
+                    output.appendLine(line)
+                    onLine(line!!)
+                    line = reader.readLine()
+                }
+                val exitCode = process.waitFor()
+                ProcessResult(exitCode == 0, output.toString(), exitCode)
             }
             future.get(timeoutSeconds, java.util.concurrent.TimeUnit.SECONDS)
         } catch (e: java.util.concurrent.TimeoutException) {

@@ -27,7 +27,8 @@ def get_soffice_env() -> dict:
 
     if _needs_shim():
         shim = _ensure_shim()
-        env["LD_PRELOAD"] = str(shim)
+        if shim is not None:
+            env["LD_PRELOAD"] = str(shim)
 
     return env
 
@@ -50,17 +51,20 @@ def _needs_shim() -> bool:
         return True
 
 
-def _ensure_shim() -> Path:
+def _ensure_shim() -> Path | None:
     if _SHIM_SO.exists():
         return _SHIM_SO
 
     src = Path(tempfile.gettempdir()) / "lo_socket_shim.c"
     src.write_text(_SHIM_SOURCE)
-    subprocess.run(
-        ["gcc", "-shared", "-fPIC", "-o", str(_SHIM_SO), str(src), "-ldl"],
-        check=True,
-        capture_output=True,
-    )
+    try:
+        subprocess.run(
+            ["gcc", "-shared", "-fPIC", "-o", str(_SHIM_SO), str(src), "-ldl"],
+            check=True, capture_output=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        src.unlink()
+        return None
     src.unlink()
     return _SHIM_SO
 
